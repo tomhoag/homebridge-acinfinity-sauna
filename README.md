@@ -73,10 +73,19 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 npm test   # runs the plugin against a mocked API and a fake Homebridge; no hardware needed
 ```
 
-## Credits
+## Acknowledgments
 
-The AC Infinity API was reverse-engineered by others:
+This plugin talks to the undocumented AC Infinity and HUUM cloud APIs. Their
+behavior was learned from the following open-source projects:
 
-- [dalinicus/homeassistant-acinfinity](https://github.com/dalinicus/homeassistant-acinfinity). This plugin uses its read-modify-write approach for port settings.
-- [keithah/homebridge-acinfinity](https://github.com/keithah/homebridge-acinfinity), for the API reference.
-- [frwickst/pyhuum](https://github.com/frwickst/pyhuum), for the HUUM API.
+- [homeassistant-acinfinity](https://github.com/dalinicus/homeassistant-acinfinity)
+  by dalinicus (MIT). Source of the port-settings write approach, the
+  device-control field list, and the port mode values.
+- [homebridge-acinfinity](https://github.com/keithah/homebridge-acinfinity)
+  by keithah (MIT). Its API reference documents the AC Infinity endpoints,
+  login quirks, and rate-limiting behavior.
+- [pyhuum](https://github.com/frwickst/pyhuum) by Frank Wickström (MIT).
+  Source of the HUUM endpoints, authentication, and status codes.
+
+This project is not affiliated with or endorsed by AC Infinity Inc. or HUUM.
+"AC Infinity" and "HUUM" are trademarks of their respective owners.
