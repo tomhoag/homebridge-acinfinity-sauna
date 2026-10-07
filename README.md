@@ -1,0 +1,82 @@
+# homebridge-acinfinity-sauna
+
+A Homebridge plugin that adds an **End Sauna** button to HomeKit for a sauna vented by an AC Infinity UIS fan.
+
+When you press **End Sauna**, the plugin:
+
+1. Stops the HUUM sauna heater (optional).
+2. Puts the AC Infinity fan port in **Auto** mode with a high-temperature trigger. The controller then runs the fan until the sauna cools to your target temperature, and stops it on its own.
+3. Once the sauna has cooled, puts the port in **Off** mode.
+
+It also adds a **Sauna Fan Off** button that cancels the cooldown and turns the port Off straight away.
+
+Both appear in HomeKit as switches that turn themselves back off after about a second. Use them as buttons or in scenes and automations.
+
+## Why the port has to end up Off
+
+Auto mode with a high-temperature trigger is exactly right for cooling down. It is exactly wrong for the next session: as the heater warms the room past the trigger, the controller would start the fan and fight the heater.
+
+So after End Sauna, the plugin checks the controller every few minutes. Once the fan has stopped **and** the probe reads at or below the target, it sets the port Off. The next session then starts with the fan off. Fan speed during a session is still set at the controller.
+
+If Homebridge restarts during a cooldown, the plugin loses track of it. Set **Daily Off time** as a backstop: the port is set Off at that time every day.
+
+## Supported controllers
+
+| Controller | Supported |
+|---|---|
+| UIS Controller 69 Pro | Yes (tested) |
+| UIS Controller 69 Pro+ | Yes (untested; same API) |
+| 89 AI+, Outlet AI, Outlet AI+ | Not yet. The plugin logs "Unsupported controller type" and adds no switches. |
+| 69 (base), 67 | No. These are Bluetooth only and have no cloud API. |
+
+## Configuration
+
+Configure it in the Homebridge UI, or add this to `config.json`:
+
+```json
+{
+  "platform": "ACInfinitySauna",
+  "acinfinity": {
+    "email": "you@example.com",
+    "password": "…",
+    "port": 1
+  },
+  "cooldown": { "temperatureF": 90, "fanSpeed": 10, "checkIntervalMinutes": 10 },
+  "scheduledOffTime": "23:30",
+  "huum": { "email": "you@example.com", "password": "…" }
+}
+```
+
+| Key | Default | Notes |
+|---|---|---|
+| `acinfinity.email`, `acinfinity.password` | (required) | The AC Infinity app login. Only the first 25 characters of the password are used, because the API ignores the rest. |
+| `acinfinity.port` | (required) | The fan's port on the controller, 1–8. |
+| `acinfinity.controllerId` | auto | Only needed if the account has more than one 69 Pro or Pro+. The log lists each controller's devId. |
+| `cooldown.temperatureF` | 90 | The fan runs until the probe reads at or below this temperature. |
+| `cooldown.fanSpeed` | 10 | Fan speed during the cooldown, 1–10. |
+| `cooldown.checkIntervalMinutes` | 10 | How often to check whether the cooldown has finished. |
+| `scheduledOffTime` | (off) | `HH:MM` in local time. Sets the port Off every day at this time. |
+| `huum.email`, `huum.password` | (off) | If either is missing, the plugin doesn't use HUUM at all. |
+| `endSaunaName`, `fanOffName` | `End Sauna`, `Sauna Fan Off` | Switch names. |
+| `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
+
+## Things to know
+
+- **The mode reported after Off lags behind.** After the port is set Off, the AC Infinity app and API keep reporting the old mode until the fan has fully spun down, and only then show Off. That is normal. The plugin doesn't treat it as a failure.
+- If the HUUM stop fails, the plugin logs the error and still starts the fan cooldown.
+- If a cooldown check can't reach the API, the plugin logs the error and tries again at the next check.
+- The AC Infinity API uses plain HTTP, the same as the official app.
+
+## Development
+
+```sh
+npm test   # runs the plugin against a mocked API and a fake Homebridge; no hardware needed
+```
+
+## Credits
+
+The AC Infinity API was reverse-engineered by others:
+
+- [dalinicus/homeassistant-acinfinity](https://github.com/dalinicus/homeassistant-acinfinity). This plugin uses its read-modify-write approach for port settings.
+- [keithah/homebridge-acinfinity](https://github.com/keithah/homebridge-acinfinity), for the API reference.
+- [frwickst/pyhuum](https://github.com/frwickst/pyhuum), for the HUUM API.
