@@ -1,7 +1,7 @@
 {
   "name": "homebridge-acinfinity-sauna",
   "displayName": "AC Infinity Sauna",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "HomeKit \"End Sauna\" action: stop a HUUM heater and run an AC Infinity UIS fan in Auto until the sauna cools, then turn it Off.",
   "type": "module",
   "main": "src/index.js",

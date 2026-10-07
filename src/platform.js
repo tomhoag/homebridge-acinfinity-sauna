@@ -8,6 +8,9 @@ export const PLATFORM_NAME = "ACInfinitySauna";
 const SUPPORTED_DEV_TYPES = new Map([[11, "UIS Controller 69 Pro"], [18, "UIS Controller 69 Pro+"]]);
 const MOMENTARY_RESET_MS = 1000;
 const STARTUP_RETRY_MS = 60 * 1000;
+const FAN_REFRESH_MS = 60 * 1000;
+// After a switch change, keep showing the requested state while the fan spins up or down.
+const FAN_HOLD_MS = 2 * 60 * 1000;
 
 const fToC = (f) => Math.round(((f - 32) * 5) / 9);
 
@@ -51,7 +54,7 @@ function readConfig(config) {
     scheduledOff,
     huum: huum.email && huum.password ? { email: huum.email, password: huum.password } : null,
     endSaunaName: config.endSaunaName || "End Sauna",
-    fanOffName: config.fanOffName || "Sauna Fan Off",
+    fanName: config.fanName || "Sauna Fan",
     debug: Boolean(config.debug),
   };
 }
@@ -66,6 +69,9 @@ export class ACInfinitySaunaPlatform {
     this.pollGeneration = 0;
     this.scheduleTimer = null;
     this.startupTimer = null;
+    this.fanRefreshTimer = null;
+    this.fanOn = false;
+    this.fanHoldUntil = 0;
 
     try {
       this.cfg = readConfig(config ?? {});
@@ -79,6 +85,7 @@ export class ACInfinitySaunaPlatform {
       this.cancelCooldownPoll();
       clearTimeout(this.scheduleTimer);
       clearTimeout(this.startupTimer);
+      clearInterval(this.fanRefreshTimer);
     });
   }
 
@@ -114,9 +121,15 @@ export class ACInfinitySaunaPlatform {
         `checking every ${cfg.cooldown.intervalMs / 60000} min. HUUM ${this.huum ? "enabled" : "not configured"}.`,
     );
 
-    this.setUpSwitch("end-sauna", cfg.endSaunaName, () => this.endSauna());
-    this.setUpSwitch("fan-off", cfg.fanOffName, () => this.fanOff("Sauna Fan Off"));
+    const active = [
+      this.setUpSwitch("end-sauna", cfg.endSaunaName, () => this.endSauna()),
+      this.setUpFanSwitch(cfg.fanName),
+    ];
+    this.removeStaleAccessories(active); // e.g. the momentary "Sauna Fan Off" switch from v0.1.0
     this.scheduleDailyOff();
+
+    await this.refreshFanState();
+    this.fanRefreshTimer = setInterval(() => this.refreshFanState(), FAN_REFRESH_MS);
   }
 
   async resolveTarget() {
@@ -167,7 +180,46 @@ export class ACInfinitySaunaPlatform {
 
   // ---------- accessories ----------
 
+  // Momentary switch: runs the action and flips back off after about a second.
   setUpSwitch(role, name, action) {
+    const { Characteristic } = this.api.hap;
+    const { accessory, service } = this.getSwitchAccessory(role, name);
+    service.getCharacteristic(Characteristic.On)
+      .onGet(() => false)
+      .onSet((value) => {
+        if (!value) return;
+        setTimeout(() => service.updateCharacteristic(Characteristic.On, false), MOMENTARY_RESET_MS);
+        this.log.info(`${name} pressed.`);
+        this.runAction(action);
+      });
+    return accessory;
+  }
+
+  // Stateful switch: shows whether the fan is spinning, and sets the port On or Off.
+  setUpFanSwitch(name) {
+    const { Characteristic } = this.api.hap;
+    const { accessory, service } = this.getSwitchAccessory("fan", name);
+    this.fanCharacteristic = service.getCharacteristic(Characteristic.On);
+    this.fanCharacteristic
+      .onGet(() => this.fanOn)
+      .onSet((value) => {
+        const on = Boolean(value);
+        this.log.info(`${name} switched ${on ? "on" : "off"}.`);
+        this.setFanState(on, { hold: true });
+        this.runAction(async () => {
+          try {
+            await (on ? this.fanOnAction() : this.fanOff(`${name} switch`));
+          } catch (e) {
+            this.fanHoldUntil = 0; // show the real state again on the next refresh
+            this.refreshFanState();
+            throw e;
+          }
+        });
+      });
+    return accessory;
+  }
+
+  getSwitchAccessory(role, name) {
     const { Service, Characteristic, uuid } = this.api.hap;
     const id = uuid.generate(`${PLATFORM_NAME}:${role}`);
 
@@ -185,14 +237,16 @@ export class ACInfinitySaunaPlatform {
 
     const service = accessory.getService(Service.Switch) ?? accessory.addService(Service.Switch, name);
     service.setCharacteristic(Characteristic.Name, name);
-    service.getCharacteristic(Characteristic.On)
-      .onGet(() => false)
-      .onSet((value) => {
-        if (!value) return;
-        setTimeout(() => service.updateCharacteristic(Characteristic.On, false), MOMENTARY_RESET_MS);
-        this.log.info(`${name} pressed.`);
-        this.runAction(action);
-      });
+    return { accessory, service };
+  }
+
+  removeStaleAccessories(active) {
+    const keep = new Set(active.map((a) => a.UUID));
+    const stale = [...this.cachedAccessories.values()].filter((a) => !keep.has(a.UUID));
+    if (!stale.length) return;
+    this.log.info(`Removing old accessories: ${stale.map((a) => a.displayName).join(", ")}.`);
+    this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, stale);
+    stale.forEach((a) => this.cachedAccessories.delete(a.UUID));
   }
 
   removeAllAccessories() {
@@ -247,6 +301,41 @@ export class ACInfinitySaunaPlatform {
     await this.setPort({ atType: AT_TYPE.OFF });
     // The controller keeps reporting the old mode until the fan spins down, so don't verify by reading back.
     this.log.info(`Fan port set to Off (${reason}).`);
+    this.setFanState(false, { hold: true });
+  }
+
+  // On mode at the speed set on the controller; the cooldown speed if that is 0.
+  async fanOnAction() {
+    this.cancelCooldownPoll();
+    const { devId, port } = this.target;
+    const current = await this.aci.getPortSettings(devId, port);
+    const overrides = { atType: AT_TYPE.ON };
+    if (!Number(current?.onSpead)) overrides.onSpead = this.cfg.cooldown.fanSpeed;
+    await this.setPort(overrides);
+    this.log.info(`Fan port set to On at speed ${overrides.onSpead ?? current.onSpead}.`);
+    this.setFanState(true, { hold: true });
+  }
+
+  // ---------- fan state ----------
+
+  setFanState(on, { hold = false } = {}) {
+    if (hold) this.fanHoldUntil = Date.now() + FAN_HOLD_MS;
+    else if (Date.now() < this.fanHoldUntil) return; // a read while the fan is still spinning up or down
+    this.fanOn = on;
+    this.fanCharacteristic?.updateValue(on);
+  }
+
+  // The switch shows on whenever the fan is spinning, including during an Auto cooldown.
+  async refreshFanState() {
+    try {
+      const { devId, port } = this.target;
+      const controllers = await this.aci.listControllers();
+      const portInfo = controllers.find((c) => String(c.devId) === devId)?.deviceInfo?.ports?.find((p) => Number(p.port) === port);
+      if (!portInfo) throw new Error(`controller ${devId} port ${port} missing from device list`);
+      this.setFanState(Number(portInfo.speak) > 0);
+    } catch (e) {
+      this.log.debug(`Fan state refresh failed: ${e.message}`);
+    }
   }
 
   setPort(overrides) {
@@ -302,6 +391,7 @@ export class ACInfinitySaunaPlatform {
       const settings = await this.aci.getPortSettings(devId, port);
       const probeF = readProbeF(settings, controller);
       const speed = Number(portInfo.speak);
+      this.setFanState(speed > 0);
       this.log.info(`Cooldown check: probe ${probeF?.toFixed(1) ?? "?"}°F (target ${temperatureF}°F), fan speed ${speed}.`);
 
       if (speed === 0 && probeF !== null && probeF <= temperatureF) {

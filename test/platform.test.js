@@ -49,6 +49,7 @@ function makeApi() {
     constructor() { this.value = false; }
     onGet(fn) { this.get = fn; return this; }
     onSet(fn) { this.set = fn; return this; }
+    updateValue(v) { this.value = v; return this; }
   }
   class Service {
     constructor() { this.chars = new Map(); }
@@ -88,8 +89,11 @@ const baseConfig = {
   huum: { email: "h@b.c", password: "hp" },
 };
 
+const started = [];
+
 async function startPlatform(config = baseConfig) {
   const api = makeApi();
+  started.push(api);
   const log = makeLog();
   const platform = new ACInfinitySaunaPlatform(log, config, api);
   await platform.start();
@@ -97,7 +101,10 @@ async function startPlatform(config = baseConfig) {
 }
 
 beforeEach(() => { server = makeServer(); });
-afterEach((t) => { globalThis.fetch = realFetch; });
+afterEach(() => {
+  started.splice(0).forEach((api) => api.emit("shutdown"));
+  globalThis.fetch = realFetch;
+});
 
 // ---------- tests ----------
 
@@ -116,6 +123,7 @@ test("unsupported controller type exposes nothing and removes cached accessories
   server.devType = 20;
   const api = makeApi();
   const log = makeLog();
+  started.push(api);
   const platform = new ACInfinitySaunaPlatform(log, baseConfig, api);
   platform.configureAccessory({ UUID: "old" });
   await platform.start();
@@ -194,26 +202,92 @@ test("expired token: logs in again and retries once", async () => {
   assert.equal(loginsAfter, loginsBefore + 1);
 });
 
-test("Sauna Fan Off cancels the poll and writes Off", async () => {
-  const { platform, api } = await startPlatform();
-  await platform.endSauna();
-  assert.ok(platform.pollTimer);
-  await platform.fanOff("test");
-  assert.equal(platform.pollTimer, null);
-  assert.equal(server.calls.filter((c) => c.path === "/api/dev/addDevMode").at(-1).query.atType, "1");
-  api.emit("shutdown");
-});
+const lastWrite = () => server.calls.filter((c) => c.path === "/api/dev/addDevMode").at(-1)?.query;
+const fanSwitch = (api) => api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:fan").getService("switch").getCharacteristic("On");
 
-test("switch is momentary and runs the action asynchronously", async () => {
+test("End Sauna switch is momentary and runs the action asynchronously", async () => {
   const { api, platform } = await startPlatform();
-  const svc = api.registered[1].getService("switch");
-  const on = svc.getCharacteristic("On");
+  const on = api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:end-sauna").getService("switch").getCharacteristic("On");
   on.set(true);
   await platform.actions;
-  assert.equal(server.calls.filter((c) => c.path === "/api/dev/addDevMode").at(-1).query.atType, "1");
+  assert.equal(lastWrite().atType, "3");
   await new Promise((r) => setTimeout(r, 1100));
   assert.equal(on.value, false);
   assert.equal(await on.get(), false);
+});
+
+test("fan switch shows whether the fan is spinning", async () => {
+  server.speak = 6;
+  const { api, platform } = await startPlatform();
+  const on = fanSwitch(api);
+  assert.equal(await on.get(), true);
+  server.speak = 0;
+  await platform.refreshFanState();
+  assert.equal(await on.get(), false);
+  assert.equal(on.value, false, "pushed to HomeKit");
+});
+
+test("fan switch on: cancels the cooldown, sets On at the controller's speed", async () => {
+  const { api, platform } = await startPlatform();
+  await platform.endSauna();
+  assert.ok(platform.pollTimer);
+  fanSwitch(api).set(true);
+  await platform.actions;
+  assert.equal(platform.pollTimer, null);
+  assert.equal(lastWrite().atType, "2");
+  assert.equal(lastWrite().onSpead, "7", "speed set at the controller is kept");
+});
+
+test("fan switch on: uses the cooldown speed when the controller's speed is 0", async () => {
+  server.settings.onSpead = 0;
+  const { api, platform } = await startPlatform({ ...baseConfig, cooldown: { fanSpeed: 4 } });
+  fanSwitch(api).set(true);
+  await platform.actions;
+  assert.equal(lastWrite().onSpead, "4");
+});
+
+test("fan switch off: cancels the cooldown and writes Off", async () => {
+  const { api, platform } = await startPlatform();
+  await platform.endSauna();
+  fanSwitch(api).set(false);
+  await platform.actions;
+  assert.equal(platform.pollTimer, null);
+  assert.equal(lastWrite().atType, "1");
+});
+
+test("fan switch keeps the requested state while the fan spins down, then follows the fan", async () => {
+  server.speak = 10;
+  const { api, platform } = await startPlatform();
+  const on = fanSwitch(api);
+  on.set(false);
+  await platform.actions;
+  await platform.refreshFanState(); // still spinning down
+  assert.equal(await on.get(), false);
+  platform.fanHoldUntil = 0; // hold expired
+  await platform.refreshFanState();
+  assert.equal(await on.get(), true);
+});
+
+test("fan switch: a failed write shows the real state again", async () => {
+  server.speak = 0;
+  const { api, platform, log } = await startPlatform();
+  const ok = globalThis.fetch;
+  globalThis.fetch = (url, init) => (String(url).includes("addDevMode") ? Promise.reject(new Error("boom")) : ok(url, init));
+  fanSwitch(api).set(true);
+  await platform.actions;
+  await new Promise((r) => setTimeout(r, 1100)); // let the follow-up refresh finish
+  assert.equal(await fanSwitch(api).get(), false);
+  assert.ok(log.lines.some((l) => l.startsWith("error") && l.includes("boom")));
+});
+
+test("old momentary Sauna Fan Off accessory is removed", async () => {
+  const api = makeApi();
+  started.push(api);
+  const platform = new ACInfinitySaunaPlatform(makeLog(), baseConfig, api);
+  platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:fan-off", displayName: "Sauna Fan Off" });
+  await platform.start();
+  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["Sauna Fan Off"]);
+  assert.equal(api.registered.length, 2);
 });
 
 test("bad config: clear error, nothing exposed", async () => {

@@ -8,9 +8,16 @@ When you press **End Sauna**, the plugin:
 2. Puts the AC Infinity fan port in **Auto** mode with a high-temperature trigger. The controller then runs the fan until the sauna cools to your target temperature, and stops it on its own.
 3. Once the sauna has cooled, puts the port in **Off** mode.
 
-It also adds a **Sauna Fan Off** button that cancels the cooldown and turns the port Off straight away.
+**End Sauna** appears in HomeKit as a switch that turns itself back off after about a second. Use it as a button or in scenes and automations.
 
-Both appear in HomeKit as switches that turn themselves back off after about a second. Use them as buttons or in scenes and automations.
+It also adds a **Sauna Fan** switch:
+
+- It shows **on** whenever the fan is spinning, including during an End Sauna cooldown. The plugin checks once a minute.
+- **Turning it on** cancels any cooldown and sets the port to **On** at the speed set on the controller. If that speed is 0, it uses the cooldown fan speed.
+- **Turning it off** cancels any cooldown and sets the port **Off** straight away.
+- After you flip it, the switch keeps your choice for 2 minutes while the fan spins up or down, and then follows the fan again.
+
+If you leave the fan On, it will run during the next heat-up. **Daily Off time** (below) is a good backstop.
 
 ## Why the port has to end up Off
 
@@ -57,7 +64,7 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `cooldown.checkIntervalMinutes` | 10 | How often to check whether the cooldown has finished. |
 | `scheduledOffTime` | (off) | `HH:MM` in local time. Sets the port Off every day at this time. |
 | `huum.email`, `huum.password` | (off) | If either is missing, the plugin doesn't use HUUM at all. |
-| `endSaunaName`, `fanOffName` | `End Sauna`, `Sauna Fan Off` | Switch names. |
+| `endSaunaName`, `fanName` | `End Sauna`, `Sauna Fan` | Switch names. |
 | `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
 
 ## Things to know
