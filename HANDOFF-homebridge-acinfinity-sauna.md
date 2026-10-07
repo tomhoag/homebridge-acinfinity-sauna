@@ -14,8 +14,7 @@ The owner sets fan speed during sessions at the controller. This plugin does **n
 
 - Spec is final (below). No plugin code written yet.
 - A stray `package.json` was started under the old name `homebridge-sauna-cooldown`. Discard it.
-- `sauna.mjs` is a working CLI prototype that has run against the real hardware. Use it as the API reference.
-  - It also contains an unfinished `watch` command. Ignore it; it is not part of this design.
+- A CLI prototype (`sauna.mjs`, since removed) verified the API against the real hardware. `src/acinfinity.js` is now the API reference.
 
 ## Naming
 
@@ -27,7 +26,7 @@ The owner sets fan speed during sessions at the controller. This plugin does **n
 
 | Controller | devType | Status |
 |---|---|---|
-| UIS Controller 69 Pro | 11 | Supported. Tested via `sauna.mjs` on the owner's unit. |
+| UIS Controller 69 Pro | 11 | Supported. Tested via the CLI prototype on the owner's unit. |
 | UIS Controller 69 Pro+ | 18 | Supported; untested. Uses the same API path per the HA integration. |
 | 89 AI+, Outlet AI, Outlet AI+ | 20, 21, 22 | **Not in v1.** They need a different write path (see below). At startup, log a clear "unsupported controller type N" error and expose nothing. |
 | 69 (base), 67 | — | Bluetooth only, no cloud API. Cannot be supported. |
@@ -128,7 +127,7 @@ devId=<devId>&port=<port>
 
 **Write port settings**, for the 69 Pro and Pro+. Copy the HA approach exactly:
 1. Read current settings with `getdevModeSettingList` for the same `devId`/`port`.
-2. For every key in HA's `DeviceControlKey` list, which is reproduced in `sauna.mjs` as `DEVICE_CONTROL_KEYS`:
+2. For every key in HA's `DeviceControlKey` list, which is reproduced in `src/acinfinity.js` as `DEVICE_CONTROL_KEYS`:
    - use the override value if one is given, else the existing value;
    - send `null`/`undefined` as `0`, objects and arrays as JSON strings, booleans as `"true"`/`"false"`.
 3. `POST /api/dev/addDevMode?<urlencoded full key set>` with an **empty body** and the `token` header.
