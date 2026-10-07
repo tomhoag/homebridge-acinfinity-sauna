@@ -5,9 +5,10 @@
   "description": "HomeKit \"End Sauna\" action: stop a HUUM heater and run an AC Infinity UIS fan in Auto until the sauna cools, then turn it Off.",
   "type": "module",
   "main": "src/index.js",
-  "files": ["src", "config.schema.json", "README.md", "THIRD_PARTY_NOTICES.md"],
+  "files": ["src", "config.schema.json", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md"],
   "keywords": ["homebridge-plugin", "ac-infinity", "huum", "sauna", "fan"],
   "license": "MIT",
+  "author": "Tom Hoag, OffByOne Studio",
   "engines": {
     "node": ">=18.0.0",
     "homebridge": "^1.8.0 || ^2.0.0"

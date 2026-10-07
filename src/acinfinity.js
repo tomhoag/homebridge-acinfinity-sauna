@@ -9,6 +9,7 @@ const REQUEST_TIMEOUT_MS = 20000;
 
 export const AT_TYPE = { OFF: 1, ON: 2, AUTO: 3 };
 
+// Derived from homeassistant-acinfinity (MIT); see THIRD_PARTY_NOTICES.md.
 // Every key the HA integration (const.py DeviceControlKey) round-trips to
 // /api/dev/addDevMode for non-AI controllers.
 const DEVICE_CONTROL_KEYS = [

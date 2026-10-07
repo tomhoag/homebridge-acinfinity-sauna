@@ -89,3 +89,8 @@ behavior was learned from the following open-source projects:
 
 This project is not affiliated with or endorsed by AC Infinity Inc. or HUUM.
 "AC Infinity" and "HUUM" are trademarks of their respective owners.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Third-party notices are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
