@@ -2,7 +2,7 @@
   "pluginAlias": "ACInfinitySauna",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Adds an **End Sauna** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** switch that shows whether the fan is running and turns it On or Off. Supports the UIS Controller 69 Pro and 69 Pro+.",
+  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** switch that shows whether the fan is running and turns it On or Off. Supports the UIS Controller 69 Pro and 69 Pro+.",
   "schema": {
     "type": "object",
     "properties": {
@@ -76,10 +76,10 @@
           "password": { "title": "Password", "type": "string" }
         }
       },
-      "endSaunaName": {
-        "title": "End Sauna switch name",
+      "cooldownName": {
+        "title": "Cooldown switch name",
         "type": "string",
-        "default": "End Sauna"
+        "default": "Sauna Cooldown"
       },
       "fanName": {
         "title": "Fan switch name",
@@ -115,14 +115,14 @@
       "type": "fieldset",
       "title": "HUUM heater (optional)",
       "expandable": true,
-      "description": "If configured, End Sauna stops the HUUM heater before starting the fan cooldown.",
+      "description": "If configured, turning on Sauna Cooldown stops the HUUM heater before starting the fan cooldown.",
       "items": ["huum.email", { "key": "huum.password", "type": "password" }]
     },
     {
       "type": "fieldset",
       "title": "Advanced",
       "expandable": true,
-      "items": ["endSaunaName", "fanName", "debug"]
+      "items": ["cooldownName", "fanName", "debug"]
     }
   ]
 }

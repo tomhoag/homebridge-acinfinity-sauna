@@ -6,7 +6,6 @@ export const PLATFORM_NAME = "ACInfinitySauna";
 
 // 69 Pro (11) and 69 Pro+ (18) share the addDevMode write path. AI controllers do not.
 const SUPPORTED_DEV_TYPES = new Map([[11, "UIS Controller 69 Pro"], [18, "UIS Controller 69 Pro+"]]);
-const MOMENTARY_RESET_MS = 1000;
 const STARTUP_RETRY_MS = 60 * 1000;
 const FAN_REFRESH_MS = 60 * 1000;
 // After a switch change, keep showing the requested state while the fan spins up or down.
@@ -53,7 +52,7 @@ function readConfig(config) {
     cooldown: { temperatureF, fanSpeed, intervalMs: checkIntervalMinutes * 60 * 1000 },
     scheduledOff,
     huum: huum.email && huum.password ? { email: huum.email, password: huum.password } : null,
-    endSaunaName: config.endSaunaName || "End Sauna",
+    cooldownName: config.cooldownName || "Sauna Cooldown",
     fanName: config.fanName || "Sauna Fan",
     debug: Boolean(config.debug),
   };
@@ -71,6 +70,7 @@ export class ACInfinitySaunaPlatform {
     this.startupTimer = null;
     this.fanRefreshTimer = null;
     this.fanOn = false;
+    this.cooldownActive = false;
     this.fanHoldUntil = 0;
 
     try {
@@ -122,10 +122,10 @@ export class ACInfinitySaunaPlatform {
     );
 
     const active = [
-      this.setUpSwitch("end-sauna", cfg.endSaunaName, () => this.endSauna()),
+      this.setUpCooldownSwitch(cfg.cooldownName),
       this.setUpFanSwitch(cfg.fanName),
     ];
-    this.removeStaleAccessories(active); // e.g. the momentary "Sauna Fan Off" switch from v0.1.0
+    this.removeStaleAccessories(active); // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1
     this.scheduleDailyOff();
 
     await this.refreshFanState();
@@ -180,17 +180,19 @@ export class ACInfinitySaunaPlatform {
 
   // ---------- accessories ----------
 
-  // Momentary switch: runs the action and flips back off after about a second.
-  setUpSwitch(role, name, action) {
+  // Stateful switch: on while a cooldown runs, off once the port has been set Off.
+  setUpCooldownSwitch(name) {
     const { Characteristic } = this.api.hap;
-    const { accessory, service } = this.getSwitchAccessory(role, name);
-    service.getCharacteristic(Characteristic.On)
-      .onGet(() => false)
+    const { accessory, service } = this.getSwitchAccessory("cooldown", name);
+    this.cooldownCharacteristic = service.getCharacteristic(Characteristic.On);
+    this.cooldownCharacteristic
+      .onGet(() => this.cooldownActive)
       .onSet((value) => {
-        if (!value) return;
-        setTimeout(() => service.updateCharacteristic(Characteristic.On, false), MOMENTARY_RESET_MS);
-        this.log.info(`${name} pressed.`);
-        this.runAction(action);
+        const on = Boolean(value);
+        if (on === this.cooldownActive) return;
+        this.log.info(`${name} switched ${on ? "on" : "off"}.`);
+        this.setCooldownState(on);
+        this.runAction(() => (on ? this.endSauna() : this.fanOff(`${name} switch`)));
       });
     return accessory;
   }
@@ -346,7 +348,8 @@ export class ACInfinitySaunaPlatform {
   // ---------- cooldown poll ----------
 
   startCooldownPoll() {
-    this.cancelCooldownPoll();
+    this.stopPollTimer();
+    this.setCooldownState(true);
     const generation = this.pollGeneration;
     const { intervalMs } = this.cfg.cooldown;
     this.log.info(`Cooldown poll started; checking every ${intervalMs / 60000} min.`);
@@ -360,6 +363,7 @@ export class ACInfinitySaunaPlatform {
           if (done) {
             this.pollGeneration++;
             this.pollTimer = null;
+            this.setCooldownState(false);
           } else {
             schedule();
           }
@@ -370,12 +374,22 @@ export class ACInfinitySaunaPlatform {
   }
 
   cancelCooldownPoll() {
+    this.stopPollTimer();
+    this.setCooldownState(false);
+  }
+
+  stopPollTimer() {
     this.pollGeneration++;
     if (this.pollTimer) {
       clearTimeout(this.pollTimer);
       this.pollTimer = null;
       this.log.info("Cooldown poll stopped.");
     }
+  }
+
+  setCooldownState(on) {
+    this.cooldownActive = on;
+    this.cooldownCharacteristic?.updateValue(on);
   }
 
   // Returns true once the port has been set Off. API errors are logged and retried next tick.

@@ -138,7 +138,7 @@ test("wrong port exposes nothing", async () => {
   assert.ok(log.lines.some((l) => l.includes("Port 4 does not exist") && l.includes('1 "Fan 1"')));
 });
 
-test("End Sauna: HUUM stop, then full-key Auto write, then poll", async () => {
+test("cooldown: HUUM stop, then full-key Auto write, then poll", async () => {
   const { platform, api } = await startPlatform();
   server.calls.length = 0;
   await platform.endSauna();
@@ -161,7 +161,7 @@ test("End Sauna: HUUM stop, then full-key Auto write, then poll", async () => {
   api.emit("shutdown");
 });
 
-test("End Sauna continues with the fan when HUUM fails", async () => {
+test("cooldown continues with the fan when HUUM fails", async () => {
   const { platform, log, api } = await startPlatform();
   const fetchOk = globalThis.fetch;
   globalThis.fetch = (url, init) => (String(url).includes("huum") ? Promise.reject(new Error("offline")) : fetchOk(url, init));
@@ -205,15 +205,65 @@ test("expired token: logs in again and retries once", async () => {
 const lastWrite = () => server.calls.filter((c) => c.path === "/api/dev/addDevMode").at(-1)?.query;
 const fanSwitch = (api) => api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:fan").getService("switch").getCharacteristic("On");
 
-test("End Sauna switch is momentary and runs the action asynchronously", async () => {
+const cooldownSwitch = (api) => api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:cooldown").getService("switch").getCharacteristic("On");
+
+test("cooldown switch on: shows on at once, sets Auto, stays on while the poll runs", async () => {
   const { api, platform } = await startPlatform();
-  const on = api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:end-sauna").getService("switch").getCharacteristic("On");
+  const on = cooldownSwitch(api);
+  assert.equal(await on.get(), false);
   on.set(true);
+  assert.equal(await on.get(), true, "shown on before the API calls finish");
   await platform.actions;
   assert.equal(lastWrite().atType, "3");
-  await new Promise((r) => setTimeout(r, 1100));
-  assert.equal(on.value, false);
+  assert.ok(platform.pollTimer);
+  assert.equal(await on.get(), true);
+  assert.equal(on.value, true);
+});
+
+test("cooldown switch turns itself off when the cooldown finishes", async () => {
+  const { api, platform } = await startPlatform();
+  cooldownSwitch(api).set(true);
+  await platform.actions;
+  server.speak = 0; server.temperatureF = 8500;
+  platform.cfg.cooldown.intervalMs = 10; // run the next poll tick now
+  platform.startCooldownPoll();
+  await new Promise((r) => setTimeout(r, 1500));
+  await platform.actions;
+  assert.equal(lastWrite().atType, "1");
+  assert.equal(platform.pollTimer, null);
+  assert.equal(cooldownSwitch(api).value, false);
+});
+
+test("cooldown switch off: cancels the cooldown and writes Off", async () => {
+  const { api, platform } = await startPlatform();
+  const on = cooldownSwitch(api);
+  on.set(true);
+  await platform.actions;
+  on.set(false);
   assert.equal(await on.get(), false);
+  await platform.actions;
+  assert.equal(platform.pollTimer, null);
+  assert.equal(lastWrite().atType, "1");
+});
+
+test("cooldown switch goes back off when the Auto write fails", async () => {
+  const { api, platform, log } = await startPlatform();
+  const ok = globalThis.fetch;
+  globalThis.fetch = (url, init) => (String(url).includes("addDevMode") ? Promise.reject(new Error("boom")) : ok(url, init));
+  cooldownSwitch(api).set(true);
+  await platform.actions;
+  assert.equal(await cooldownSwitch(api).get(), false);
+  assert.equal(platform.pollTimer, null);
+  assert.ok(log.lines.some((l) => l.includes("Setting the fan port to Auto failed")));
+});
+
+test("turning the fan switch on ends the cooldown", async () => {
+  const { api, platform } = await startPlatform();
+  cooldownSwitch(api).set(true);
+  await platform.actions;
+  fanSwitch(api).set(true);
+  await platform.actions;
+  assert.equal(await cooldownSwitch(api).get(), false);
 });
 
 test("fan switch shows whether the fan is spinning", async () => {
@@ -280,13 +330,14 @@ test("fan switch: a failed write shows the real state again", async () => {
   assert.ok(log.lines.some((l) => l.startsWith("error") && l.includes("boom")));
 });
 
-test("old momentary Sauna Fan Off accessory is removed", async () => {
+test("old momentary End Sauna and Sauna Fan Off accessories are removed", async () => {
   const api = makeApi();
   started.push(api);
   const platform = new ACInfinitySaunaPlatform(makeLog(), baseConfig, api);
+  platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:end-sauna", displayName: "End Sauna" });
   platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:fan-off", displayName: "Sauna Fan Off" });
   await platform.start();
-  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["Sauna Fan Off"]);
+  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["End Sauna", "Sauna Fan Off"]);
   assert.equal(api.registered.length, 2);
 });
 

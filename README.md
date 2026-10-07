@@ -1,18 +1,18 @@
 # homebridge-acinfinity-sauna
 
-A Homebridge plugin that adds an **End Sauna** button to HomeKit for a sauna vented by an AC Infinity UIS fan.
+A Homebridge plugin that adds a **Sauna Cooldown** switch to HomeKit for a sauna vented by an AC Infinity UIS fan.
 
-When you press **End Sauna**, the plugin:
+When you turn **Sauna Cooldown** on, the plugin:
 
 1. Stops the HUUM sauna heater (optional).
 2. Puts the AC Infinity fan port in **Auto** mode with a high-temperature trigger. The controller then runs the fan until the sauna cools to your target temperature, and stops it on its own.
-3. Once the sauna has cooled, puts the port in **Off** mode.
+3. Once the sauna has cooled, puts the port in **Off** mode and turns the switch off.
 
-**End Sauna** appears in HomeKit as a switch that turns itself back off after about a second. Use it as a button or in scenes and automations.
+So the switch is **on for exactly as long as a cooldown is running**. Turning it off early cancels the cooldown and sets the fan port Off straight away. Automations can use "Sauna Cooldown turns off" to act when the sauna has cooled.
 
 It also adds a **Sauna Fan** switch:
 
-- It shows **on** whenever the fan is spinning, including during an End Sauna cooldown. The plugin checks once a minute.
+- It shows **on** whenever the fan is spinning, including during a cooldown. The plugin checks once a minute.
 - **Turning it on** cancels any cooldown and sets the port to **On** at the speed set on the controller. If that speed is 0, it uses the cooldown fan speed.
 - **Turning it off** cancels any cooldown and sets the port **Off** straight away.
 - After you flip it, the switch keeps your choice for 2 minutes while the fan spins up or down, and then follows the fan again.
@@ -23,9 +23,9 @@ If you leave the fan On, it will run during the next heat-up. **Daily Off time**
 
 Auto mode with a high-temperature trigger is exactly right for cooling down. It is exactly wrong for the next session: as the heater warms the room past the trigger, the controller would start the fan and fight the heater.
 
-So after End Sauna, the plugin checks the controller every few minutes. Once the fan has stopped **and** the probe reads at or below the target, it sets the port Off. The next session then starts with the fan off. Fan speed during a session is still set at the controller.
+So during a cooldown, the plugin checks the controller every few minutes. Once the fan has stopped **and** the probe reads at or below the target, it sets the port Off. The next session then starts with the fan off. Fan speed during a session is still set at the controller.
 
-If Homebridge restarts during a cooldown, the plugin loses track of it. Set **Daily Off time** as a backstop: the port is set Off at that time every day.
+If Homebridge restarts during a cooldown, the plugin loses track of it: the Sauna Cooldown switch shows off, and the port stays in Auto. Set **Daily Off time** as a backstop: the port is set Off at that time every day.
 
 ## Supported controllers
 
@@ -64,7 +64,7 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `cooldown.checkIntervalMinutes` | 10 | How often to check whether the cooldown has finished. |
 | `scheduledOffTime` | (off) | `HH:MM` in local time. Sets the port Off every day at this time. |
 | `huum.email`, `huum.password` | (off) | If either is missing, the plugin doesn't use HUUM at all. |
-| `endSaunaName`, `fanName` | `End Sauna`, `Sauna Fan` | Switch names. |
+| `cooldownName`, `fanName` | `Sauna Cooldown`, `Sauna Fan` | Switch names. |
 | `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
 
 ## Things to know
