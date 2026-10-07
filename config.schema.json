@@ -76,6 +76,29 @@
           "password": { "title": "Password", "type": "string" }
         }
       },
+      "temperatureSensor": {
+        "title": "Temperature sensor",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Show the probe temperature in HomeKit",
+            "type": "boolean",
+            "default": false
+          },
+          "name": {
+            "title": "Sensor name",
+            "type": "string",
+            "default": "Sauna Temperature"
+          },
+          "pollIntervalSeconds": {
+            "title": "Poll interval (seconds)",
+            "type": "integer",
+            "default": 120,
+            "minimum": 30,
+            "maximum": 600
+          }
+        }
+      },
       "cooldownName": {
         "title": "Cooldown switch name",
         "type": "string",
@@ -117,6 +140,16 @@
       "expandable": true,
       "description": "If configured, turning on Sauna Cooldown stops the HUUM heater before starting the fan cooldown.",
       "items": ["huum.email", { "key": "huum.password", "type": "password" }]
+    },
+    {
+      "type": "fieldset",
+      "title": "Temperature sensor (optional)",
+      "expandable": true,
+      "items": [
+        "temperatureSensor.enabled",
+        { "key": "temperatureSensor.name", "condition": { "functionBody": "return model.temperatureSensor && model.temperatureSensor.enabled;" } },
+        { "key": "temperatureSensor.pollIntervalSeconds", "condition": { "functionBody": "return model.temperatureSensor && model.temperatureSensor.enabled;" } }
+      ]
     },
     {
       "type": "fieldset",

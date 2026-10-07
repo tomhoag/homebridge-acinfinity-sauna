@@ -130,11 +130,20 @@ export class ACInfinityClient {
     return body.data;
   }
 
-  listControllers() {
-    return this.#enqueue(async () => {
+  // Callers can accept a cached result up to maxAgeMs old. A fetch already in flight is shared,
+  // so the sensor poll, fan refresh and cooldown check never send duplicate calls.
+  listControllers({ maxAgeMs = 0 } = {}) {
+    if (this.devices && Date.now() - this.devices.at < maxAgeMs) return Promise.resolve(this.devices.data);
+    if (this.devicesInFlight) return this.devicesInFlight;
+    this.devicesInFlight = this.#enqueue(async () => {
       if (!this.token) await this.#login();
-      return (await this.#call("/api/user/devInfoListAll", { form: { userId: this.token } })) ?? [];
+      const data = (await this.#call("/api/user/devInfoListAll", { form: { userId: this.token } })) ?? [];
+      this.devices = { at: Date.now(), data };
+      return data;
+    }).finally(() => {
+      this.devicesInFlight = null;
     });
+    return this.devicesInFlight;
   }
 
   getPortSettings(devId, port) {

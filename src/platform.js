@@ -10,6 +10,13 @@ const STARTUP_RETRY_MS = 60 * 1000;
 const FAN_REFRESH_MS = 60 * 1000;
 // After a switch change, keep showing the requested state while the fan spins up or down.
 const FAN_HOLD_MS = 2 * 60 * 1000;
+// The cooldown check reuses a device list fetched by another poll if it is this fresh.
+const COOLDOWN_CACHE_MAX_AGE_MS = 60 * 1000;
+// After this many failed polls in a row, the temperature sensor shows No Response.
+const SENSOR_FAILURE_LIMIT = 3;
+// Believable probe readings, in °C. Anything else, a missing value or exactly 0 is not a reading.
+const PROBE_MIN_C = -20;
+const PROBE_MAX_C = 130;
 
 const fToC = (f) => Math.round(((f - 32) * 5) / 9);
 
@@ -35,6 +42,16 @@ function readConfig(config) {
     throw new ConfigError("cooldown.checkIntervalMinutes must be at least 1.");
   }
 
+  const sensor = config.temperatureSensor ?? {};
+  let temperatureSensor = null;
+  if (sensor.enabled) {
+    const pollIntervalSeconds = Number(sensor.pollIntervalSeconds ?? 120);
+    if (!Number.isFinite(pollIntervalSeconds) || pollIntervalSeconds < 30 || pollIntervalSeconds > 600) {
+      throw new ConfigError("temperatureSensor.pollIntervalSeconds must be between 30 and 600.");
+    }
+    temperatureSensor = { name: sensor.name || "Sauna Temperature", intervalMs: pollIntervalSeconds * 1000 };
+  }
+
   let scheduledOff = null;
   if (config.scheduledOffTime) {
     const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(config.scheduledOffTime).trim());
@@ -52,6 +69,7 @@ function readConfig(config) {
     cooldown: { temperatureF, fanSpeed, intervalMs: checkIntervalMinutes * 60 * 1000 },
     scheduledOff,
     huum: huum.email && huum.password ? { email: huum.email, password: huum.password } : null,
+    temperatureSensor,
     cooldownName: config.cooldownName || "Sauna Cooldown",
     fanName: config.fanName || "Sauna Fan",
     debug: Boolean(config.debug),
@@ -72,6 +90,10 @@ export class ACInfinitySaunaPlatform {
     this.fanOn = false;
     this.cooldownActive = false;
     this.fanHoldUntil = 0;
+    this.fanStreak = new FailureStreak(log, "Fan state check");
+    this.sensorTimer = null;
+    this.temperatureC = null;
+    this.sensorStreak = new FailureStreak(log, "Temperature poll");
 
     try {
       this.cfg = readConfig(config ?? {});
@@ -86,6 +108,7 @@ export class ACInfinitySaunaPlatform {
       clearTimeout(this.scheduleTimer);
       clearTimeout(this.startupTimer);
       clearInterval(this.fanRefreshTimer);
+      clearInterval(this.sensorTimer);
     });
   }
 
@@ -125,11 +148,19 @@ export class ACInfinitySaunaPlatform {
       this.setUpCooldownSwitch(cfg.cooldownName),
       this.setUpFanSwitch(cfg.fanName),
     ];
+    if (cfg.temperatureSensor) active.push(this.setUpTemperatureSensor(cfg.temperatureSensor.name));
     this.removeStaleAccessories(active); // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1
     this.scheduleDailyOff();
 
     await this.refreshFanState();
     this.fanRefreshTimer = setInterval(() => this.refreshFanState(), FAN_REFRESH_MS);
+
+    if (cfg.temperatureSensor) {
+      const { intervalMs } = cfg.temperatureSensor;
+      this.log.info(`Temperature sensor enabled; polling every ${intervalMs / 1000}s.`);
+      await this.pollTemperature();
+      this.sensorTimer = setInterval(() => this.pollTemperature(), intervalMs);
+    }
   }
 
   async resolveTarget() {
@@ -183,7 +214,7 @@ export class ACInfinitySaunaPlatform {
   // Stateful switch: on while a cooldown runs, off once the port has been set Off.
   setUpCooldownSwitch(name) {
     const { Characteristic } = this.api.hap;
-    const { accessory, service } = this.getSwitchAccessory("cooldown", name);
+    const { accessory, service } = this.getAccessory("cooldown", name);
     this.cooldownCharacteristic = service.getCharacteristic(Characteristic.On);
     this.cooldownCharacteristic
       .onGet(() => this.cooldownActive)
@@ -200,7 +231,7 @@ export class ACInfinitySaunaPlatform {
   // Stateful switch: shows whether the fan is spinning, and sets the port On or Off.
   setUpFanSwitch(name) {
     const { Characteristic } = this.api.hap;
-    const { accessory, service } = this.getSwitchAccessory("fan", name);
+    const { accessory, service } = this.getAccessory("fan", name);
     this.fanCharacteristic = service.getCharacteristic(Characteristic.On);
     this.fanCharacteristic
       .onGet(() => this.fanOn)
@@ -221,8 +252,26 @@ export class ACInfinitySaunaPlatform {
     return accessory;
   }
 
-  getSwitchAccessory(role, name) {
-    const { Service, Characteristic, uuid } = this.api.hap;
+  // Probe temperature in °C; Home converts for display. Polling is the only source of truth.
+  setUpTemperatureSensor(name) {
+    const { Service, Characteristic, HapStatusError, HAPStatus } = this.api.hap;
+    const { accessory, service } = this.getAccessory("temperature", name, Service.TemperatureSensor);
+    this.temperatureCharacteristic = service.getCharacteristic(Characteristic.CurrentTemperature);
+    // HAP's default maximum is 100 °C, which a sauna can exceed.
+    this.temperatureCharacteristic.setProps({ minValue: -40, maxValue: 150, minStep: 0.1 });
+    this.temperatureCharacteristic.onGet(() => {
+      if (this.temperatureC === null || this.sensorStreak.count >= SENSOR_FAILURE_LIMIT) {
+        throw new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE);
+      }
+      return this.temperatureC;
+    });
+    this.sensorActiveCharacteristic = service.getCharacteristic(Characteristic.StatusActive);
+    this.sensorActiveCharacteristic.onGet(() => this.sensorStreak.count < SENSOR_FAILURE_LIMIT);
+    return accessory;
+  }
+
+  getAccessory(role, name, serviceType = this.api.hap.Service.Switch) {
+    const { Characteristic, Service, uuid } = this.api.hap;
     const id = uuid.generate(`${PLATFORM_NAME}:${role}`);
 
     let accessory = this.cachedAccessories.get(id);
@@ -237,7 +286,7 @@ export class ACInfinitySaunaPlatform {
       .setCharacteristic(Characteristic.Model, SUPPORTED_DEV_TYPES.get(this.target.devType))
       .setCharacteristic(Characteristic.SerialNumber, `${this.target.devId}-${this.target.port}-${role}`);
 
-    const service = accessory.getService(Service.Switch) ?? accessory.addService(Service.Switch, name);
+    const service = accessory.getService(serviceType) ?? accessory.addService(serviceType, name);
     service.setCharacteristic(Characteristic.Name, name);
     return { accessory, service };
   }
@@ -330,14 +379,49 @@ export class ACInfinitySaunaPlatform {
   // The switch shows on whenever the fan is spinning, including during an Auto cooldown.
   async refreshFanState() {
     try {
-      const { devId, port } = this.target;
-      const controllers = await this.aci.listControllers();
-      const portInfo = controllers.find((c) => String(c.devId) === devId)?.deviceInfo?.ports?.find((p) => Number(p.port) === port);
-      if (!portInfo) throw new Error(`controller ${devId} port ${port} missing from device list`);
+      const { portInfo } = await this.readPort();
       this.setFanState(Number(portInfo.speak) > 0);
+      this.fanStreak.succeed();
     } catch (e) {
-      this.log.debug(`Fan state refresh failed: ${e.message}`);
+      this.fanStreak.fail(e.message);
     }
+  }
+
+  // ---------- temperature sensor ----------
+
+  async pollTemperature() {
+    const { HapStatusError, HAPStatus } = this.api.hap;
+    try {
+      const { controller } = await this.readPort();
+      const c = readProbeC(controller);
+      if (c === null) {
+        throw new Error(`no valid probe reading (deviceInfo.temperature = ${JSON.stringify(controller.deviceInfo?.temperature)})`);
+      }
+      const wasInactive = this.sensorStreak.count >= SENSOR_FAILURE_LIMIT;
+      this.temperatureC = Math.round(c * 10) / 10;
+      this.sensorStreak.succeed();
+      this.log.debug(`Temperature poll: ${this.temperatureC}°C.`);
+      // Pushing the value is what lets "rises above / drops below" automations fire.
+      this.temperatureCharacteristic.updateValue(this.temperatureC);
+      if (wasInactive) this.sensorActiveCharacteristic.updateValue(true);
+    } catch (e) {
+      // Until the limit, Home keeps showing the last reading.
+      if (this.sensorStreak.fail(e.message) === SENSOR_FAILURE_LIMIT) {
+        this.log.warn(`Temperature sensor marked not responding after ${SENSOR_FAILURE_LIMIT} failed polls.`);
+        this.sensorActiveCharacteristic.updateValue(false);
+        this.temperatureCharacteristic.updateValue(new HapStatusError(HAPStatus.SERVICE_COMMUNICATION_FAILURE));
+      }
+    }
+  }
+
+  // The configured controller and port from the device list, fresh or from a recent cached fetch.
+  async readPort({ maxAgeMs = 0 } = {}) {
+    const { devId, port } = this.target;
+    const controllers = await this.aci.listControllers({ maxAgeMs });
+    const controller = controllers.find((c) => String(c.devId) === devId);
+    const portInfo = controller?.deviceInfo?.ports?.find((p) => Number(p.port) === port);
+    if (!portInfo) throw new Error(`controller ${devId} port ${port} missing from device list`);
+    return { controller, portInfo };
   }
 
   setPort(overrides) {
@@ -394,19 +478,15 @@ export class ACInfinitySaunaPlatform {
 
   // Returns true once the port has been set Off. API errors are logged and retried next tick.
   async cooldownTick() {
-    const { devId, port } = this.target;
     const { temperatureF } = this.cfg.cooldown;
     try {
-      const controllers = await this.aci.listControllers();
-      const controller = controllers.find((c) => String(c.devId) === devId);
-      const portInfo = controller?.deviceInfo?.ports?.find((p) => Number(p.port) === port);
-      if (!portInfo) throw new Error(`controller ${devId} port ${port} missing from device list`);
-
-      const settings = await this.aci.getPortSettings(devId, port);
-      const probeF = readProbeF(settings, controller);
+      const { controller, portInfo } = await this.readPort({ maxAgeMs: COOLDOWN_CACHE_MAX_AGE_MS });
+      const probeC = readProbeC(controller);
+      const probeF = probeC === null ? null : (probeC * 9) / 5 + 32;
       const speed = Number(portInfo.speak);
       this.setFanState(speed > 0);
-      this.log.info(`Cooldown check: probe ${probeF?.toFixed(1) ?? "?"}°F (target ${temperatureF}°F), fan speed ${speed}.`);
+      const probe = probeF === null ? "no valid reading" : `${probeF.toFixed(1)}°F`;
+      this.log.info(`Cooldown check: probe ${probe} (target ${temperatureF}°F), fan speed ${speed}.`);
 
       if (speed === 0 && probeF !== null && probeF <= temperatureF) {
         await this.setPort({ atType: AT_TYPE.OFF });
@@ -441,11 +521,33 @@ export class ACInfinitySaunaPlatform {
   }
 }
 
-// Port settings report °F × 100. Fall back to the controller's °C × 100 reading.
-function readProbeF(settings, controller) {
-  const f = Number(settings?.temperatureF ?? settings?.devSetting?.temperatureF);
-  if (Number.isFinite(f) && f !== 0) return f / 100;
-  const c = Number(controller?.deviceInfo?.temperature);
-  if (Number.isFinite(c)) return (c / 100) * 9 / 5 + 32;
-  return null;
+// Probe °C from deviceInfo.temperature (°C × 100), or null when there is no believable reading:
+// missing, exactly 0 (what a missing probe may report), or outside PROBE_MIN_C..PROBE_MAX_C.
+function readProbeC(controller) {
+  const raw = controller?.deviceInfo?.temperature;
+  if (raw === undefined || raw === null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n === 0) return null;
+  const c = n / 100;
+  return c < PROBE_MIN_C || c > PROBE_MAX_C ? null : c;
+}
+
+// Logs one warning per run of failures, and one info line when it recovers.
+class FailureStreak {
+  constructor(log, label) {
+    this.log = log;
+    this.label = label;
+    this.count = 0;
+  }
+
+  fail(message) {
+    this.count++;
+    if (this.count === 1) this.log.warn(`${this.label} failed: ${message}. Will keep trying.`);
+    return this.count;
+  }
+
+  succeed() {
+    if (this.count > 0) this.log.info(`${this.label} recovered after ${this.count} failed attempt(s).`);
+    this.count = 0;
+  }
 }

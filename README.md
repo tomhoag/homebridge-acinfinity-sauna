@@ -19,6 +19,18 @@ It also adds a **Sauna Fan** switch:
 
 If you leave the fan On, it will run during the next heat-up. **Daily Off time** (below) is a good backstop.
 
+### Temperature sensor (optional)
+
+Turn on **Temperature sensor** to add a **Sauna Temperature** sensor showing the AC Infinity probe reading. Use it in automations such as "when Sauna Temperature drops below 90 °F".
+
+- The plugin polls the reading every 2 minutes by default (30 s to 10 min). The AC Infinity cloud can't push updates, so the sensor is never more current than the last poll.
+- Readings up to 150 °C (302 °F) are shown. HomeKit's usual limit for temperature sensors is 100 °C.
+- If the probe sends no believable reading (missing, exactly 0, or outside −20 °C to 130 °C), that poll counts as failed.
+- After 3 failed polls in a row, the sensor shows **No Response** until a poll succeeds. Until then, Home keeps showing the last reading.
+- After a Homebridge restart, the sensor shows No Response until the first poll succeeds.
+
+The cooldown uses the same probe reading and the same checks: if there is no believable reading, it waits for the next check rather than deciding the sauna has cooled.
+
 ## Why the port has to end up Off
 
 Auto mode with a high-temperature trigger is exactly right for cooling down. It is exactly wrong for the next session: as the heater warms the room past the trigger, the controller would start the fan and fight the heater.
@@ -64,6 +76,9 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `cooldown.checkIntervalMinutes` | 10 | How often to check whether the cooldown has finished. |
 | `scheduledOffTime` | (off) | `HH:MM` in local time. Sets the port Off every day at this time. |
 | `huum.email`, `huum.password` | (off) | If either is missing, the plugin doesn't use HUUM at all. |
+| `temperatureSensor.enabled` | false | Adds the temperature sensor. |
+| `temperatureSensor.name` | `Sauna Temperature` | Sensor name. |
+| `temperatureSensor.pollIntervalSeconds` | 120 | How often to read the probe, 30–600. |
 | `cooldownName`, `fanName` | `Sauna Cooldown`, `Sauna Fan` | Switch names. |
 | `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
 

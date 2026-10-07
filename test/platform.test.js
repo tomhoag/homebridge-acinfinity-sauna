@@ -9,10 +9,10 @@ const DEV_ID = "1234567890123456789"; // larger than Number.MAX_SAFE_INTEGER
 let server;
 const realFetch = globalThis.fetch;
 
-function makeServer({ devType = 11, ports = [1, 2], speak = 10, temperatureF = 12000 } = {}) {
+function makeServer({ devType = 11, ports = [1, 2], speak = 10, temp = 4000 } = {}) {
   const s = {
     calls: [],
-    devType, ports, speak, temperatureF,
+    devType, ports, speak, temp,
     tokenValid: true,
     settings: { devId: DEV_ID, atType: 3, modeType: 0, onSpead: 7, offSpead: 0, devSetting: { a: 1 }, isOpenAutomation: false },
   };
@@ -31,10 +31,11 @@ function makeServer({ devType = 11, ports = [1, 2], speak = 10, temperatureF = 1
     if (u.pathname === "/api/user/devInfoListAll") {
       // devId as a bare JSON number, the worst case for precision.
       const ports = s.ports.map((p) => `{"port":${p},"portName":"Fan ${p}","online":1,"speak":${s.speak}}`).join(",");
-      return json(`{"code":200,"data":[{"devId":${DEV_ID},"devName":"Sauna","devType":${s.devType},"deviceInfo":{"temperature":4000,"ports":[${ports}]}}]}`);
+      const temp = s.temp === undefined ? "" : `"temperature":${JSON.stringify(s.temp)},`;
+      return json(`{"code":200,"data":[{"devId":${DEV_ID},"devName":"Sauna","devType":${s.devType},"deviceInfo":{${temp}"ports":[${ports}]}}]}`);
     }
     if (u.pathname === "/api/dev/getdevModeSettingList") {
-      return json({ code: 200, data: { ...s.settings, temperatureF: s.temperatureF } });
+      return json({ code: 200, data: s.settings });
     }
     if (u.pathname === "/api/dev/addDevMode") return json({ code: 200, data: null });
     return new Response("not found", { status: 404 });
@@ -49,6 +50,7 @@ function makeApi() {
     constructor() { this.value = false; }
     onGet(fn) { this.get = fn; return this; }
     onSet(fn) { this.set = fn; return this; }
+    setProps(p) { this.props = p; return this; }
     updateValue(v) { this.value = v; return this; }
   }
   class Service {
@@ -57,7 +59,8 @@ function makeApi() {
     setCharacteristic() { return this; }
     updateCharacteristic(c, v) { this.getCharacteristic(c).value = v; return this; }
   }
-  const Service_ = { AccessoryInformation: "info", Switch: "switch" };
+  const Service_ = { AccessoryInformation: "info", Switch: "switch", TemperatureSensor: "temperature" };
+  class HapStatusError extends Error { constructor(status) { super(`HAP status ${status}`); this.hapStatus = status; } }
   class PlatformAccessory {
     constructor(displayName, UUID) { this.displayName = displayName; this.UUID = UUID; this.services = new Map([["info", new Service()]]); }
     getService(t) { return this.services.get(t); }
@@ -65,7 +68,13 @@ function makeApi() {
   }
   const handlers = {};
   const api = {
-    hap: { Service: Service_, Characteristic: { On: "On", Name: "Name", Manufacturer: "M", Model: "Mo", SerialNumber: "S" }, uuid: { generate: (s) => `uuid:${s}` } },
+    hap: {
+      Service: Service_,
+      Characteristic: { On: "On", Name: "Name", Manufacturer: "M", Model: "Mo", SerialNumber: "S", CurrentTemperature: "CurrentTemperature", StatusActive: "StatusActive" },
+      HapStatusError,
+      HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 },
+      uuid: { generate: (s) => `uuid:${s}` },
+    },
     platformAccessory: PlatformAccessory,
     registered: [],
     unregistered: [],
@@ -175,19 +184,20 @@ test("cooldown tick: keeps polling while hot or fan running, sets Off once cool 
   const { platform } = await startPlatform();
   const writes = () => server.calls.filter((c) => c.path === "/api/dev/addDevMode");
 
-  server.speak = 0; server.temperatureF = 9500;
+  server.speak = 0; server.temp = 3500; // 95 °F
   assert.equal(await platform.cooldownTick(), false);
-  server.speak = 3; server.temperatureF = 8800;
+  server.speak = 3; server.temp = 3111; platform.aci.devices = null; // 88 °F
   assert.equal(await platform.cooldownTick(), false);
   assert.equal(writes().length, 0);
 
-  server.speak = 0; server.temperatureF = 9000;
+  server.speak = 0; server.temp = 3222; platform.aci.devices = null; // 90.0 °F
   assert.equal(await platform.cooldownTick(), true);
   assert.equal(writes().at(-1).query.atType, "1");
 });
 
 test("cooldown tick: API errors are logged and polling continues", async () => {
   const { platform, log } = await startPlatform();
+  platform.aci.devices = null; // force a fetch instead of the startup result
   globalThis.fetch = () => Promise.reject(new Error("network down"));
   assert.equal(await platform.cooldownTick(), false);
   assert.ok(log.lines.some((l) => l.includes("Cooldown check failed: network down")));
@@ -224,7 +234,7 @@ test("cooldown switch turns itself off when the cooldown finishes", async () => 
   const { api, platform } = await startPlatform();
   cooldownSwitch(api).set(true);
   await platform.actions;
-  server.speak = 0; server.temperatureF = 8500;
+  server.speak = 0; server.temp = 2944; platform.aci.devices = null; // 85 °F
   platform.cfg.cooldown.intervalMs = 10; // run the next poll tick now
   platform.startCooldownPoll();
   await new Promise((r) => setTimeout(r, 1500));
@@ -353,4 +363,133 @@ test("scheduled Off is set for the next occurrence", async () => {
   const { log, api } = await startPlatform({ ...baseConfig, scheduledOffTime: hhmm });
   assert.ok(log.lines.some((l) => l.includes("Scheduled Off at")));
   api.emit("shutdown");
+});
+
+// ---------- temperature sensor ----------
+
+const sensorConfig = { ...baseConfig, temperatureSensor: { enabled: true } };
+const sensorChar = (api, c) => api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:temperature").getService("temperature").getCharacteristic(c);
+const listCalls = () => server.calls.filter((c) => c.path === "/api/user/devInfoListAll").length;
+
+test("sensor disabled: no sensor accessory and no sensor polling", async () => {
+  const { api, platform, log } = await startPlatform({ ...baseConfig, debug: true });
+  assert.ok(!api.registered.some((a) => a.UUID === "uuid:ACInfinitySauna:temperature"));
+  assert.equal(platform.sensorTimer, null);
+  assert.ok(!log.lines.some((l) => l.includes("Temperature")));
+});
+
+test("sensor disabled later: the old sensor accessory is removed", async () => {
+  const api = makeApi();
+  started.push(api);
+  const platform = new ACInfinitySaunaPlatform(makeLog(), baseConfig, api);
+  platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:temperature", displayName: "Sauna Temperature" });
+  await platform.start();
+  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["Sauna Temperature"]);
+});
+
+test("sensor enabled: widened range, probe value in °C at startup", async () => {
+  server.temp = 6199;
+  const { api } = await startPlatform(sensorConfig);
+  const t = sensorChar(api, "CurrentTemperature");
+  assert.deepEqual(t.props, { minValue: -40, maxValue: 150, minStep: 0.1 });
+  assert.equal(await t.get(), 62);
+  assert.equal(t.value, 62, "pushed to HomeKit");
+  assert.equal(await sensorChar(api, "StatusActive").get(), true);
+});
+
+test("sensor shows readings over 100 °C", async () => {
+  server.temp = 11550;
+  const { api } = await startPlatform(sensorConfig);
+  assert.equal(await sensorChar(api, "CurrentTemperature").get(), 115.5);
+});
+
+test("sensor poll pushes each new value", async () => {
+  const { api, platform } = await startPlatform(sensorConfig);
+  server.temp = 3150;
+  await platform.pollTemperature();
+  assert.equal(sensorChar(api, "CurrentTemperature").value, 31.5);
+});
+
+for (const [label, bad] of [["missing", undefined], ["exactly 0", 0], ["below −20 °C", -2500], ["above 130 °C", 13100], ["not a number", "n/a"]]) {
+  test(`probe reading ${label} counts as a failed poll`, async () => {
+    const { api, platform } = await startPlatform(sensorConfig);
+    server.temp = bad;
+    await platform.pollTemperature();
+    assert.equal(platform.sensorStreak.count, 1);
+    assert.equal(await sensorChar(api, "CurrentTemperature").get(), 40, "last reading kept");
+  });
+}
+
+test("sensor: No Response after 3 failed polls, one warning, recovers on success", async () => {
+  const { api, platform, log } = await startPlatform(sensorConfig);
+  const t = sensorChar(api, "CurrentTemperature");
+  const active = sensorChar(api, "StatusActive");
+  const ok = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("network down"));
+  await platform.pollTemperature();
+  await platform.pollTemperature();
+  assert.equal(await t.get(), 40, "last value kept for the first two failures");
+  await platform.pollTemperature();
+  await assert.rejects(async () => t.get(), (e) => e.hapStatus === -70402);
+  assert.equal(active.value, false);
+  assert.equal(await active.get(), false);
+  assert.ok(t.value instanceof Error, "No Response pushed to HomeKit");
+  await platform.pollTemperature();
+  assert.equal(log.lines.filter((l) => l.startsWith("warn") && l.includes("Temperature poll failed")).length, 1);
+
+  globalThis.fetch = ok;
+  server.temp = 3000;
+  await platform.pollTemperature();
+  assert.equal(await t.get(), 30);
+  assert.equal(active.value, true);
+  assert.ok(log.lines.some((l) => l.includes("Temperature poll recovered after 4")));
+});
+
+test("sensor: No Response until the first poll succeeds", async () => {
+  server.temp = 0;
+  const { api } = await startPlatform(sensorConfig);
+  await assert.rejects(async () => sensorChar(api, "CurrentTemperature").get(), (e) => e.hapStatus === -70402);
+});
+
+test("cooldown check reuses a device list under 60 s old", async () => {
+  const { platform } = await startPlatform(sensorConfig);
+  const before = listCalls();
+  await platform.cooldownTick();
+  assert.equal(listCalls(), before, "no extra devInfoListAll call");
+  platform.aci.devices.at -= 61 * 1000;
+  await platform.cooldownTick();
+  assert.equal(listCalls(), before + 1);
+});
+
+test("polls running at the same moment share one devInfoListAll call", async () => {
+  const { platform } = await startPlatform(sensorConfig);
+  const before = listCalls();
+  await Promise.all([platform.pollTemperature(), platform.refreshFanState()]);
+  assert.equal(listCalls(), before + 1);
+});
+
+test("cooldown waits when the probe has no believable reading", async () => {
+  const { platform, log } = await startPlatform();
+  server.speak = 0; server.temp = 0; platform.aci.devices = null;
+  assert.equal(await platform.cooldownTick(), false);
+  assert.ok(!server.calls.some((c) => c.path === "/api/dev/addDevMode"));
+  assert.ok(log.lines.some((l) => l.includes("probe no valid reading")));
+});
+
+test("bad sensor poll interval is a config error", async () => {
+  const { api, log } = await startPlatform({ ...baseConfig, temperatureSensor: { enabled: true, pollIntervalSeconds: 10 } });
+  assert.equal(api.registered.length, 0);
+  assert.ok(log.lines.some((l) => l.includes("pollIntervalSeconds")));
+});
+
+test("fan state failures: one warning per streak, info on recovery", async () => {
+  const { platform, log } = await startPlatform();
+  const ok = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("network down"));
+  await platform.refreshFanState();
+  await platform.refreshFanState();
+  globalThis.fetch = ok;
+  await platform.refreshFanState();
+  assert.equal(log.lines.filter((l) => l.includes("Fan state check failed")).length, 1);
+  assert.ok(log.lines.some((l) => l.includes("Fan state check recovered after 2")));
 });
