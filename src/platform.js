@@ -9,8 +9,6 @@ export const PLATFORM_NAME = "ACInfinitySauna";
 const SUPPORTED_DEV_TYPES = new Map([[11, "UIS Controller 69 Pro"], [18, "UIS Controller 69 Pro+"]]);
 const STARTUP_RETRY_MS = 60 * 1000;
 const FAN_REFRESH_MS = 60 * 1000;
-// After a switch change, keep showing the requested state while the fan spins up or down.
-const FAN_HOLD_MS = 2 * 60 * 1000;
 // The controller reports its old mode until the fan stops after an Off, for up to about this long.
 const OFF_READBACK_LAG_MS = 2 * 60 * 1000;
 // The sensor poll and cooldown check reuse a device list fetched by another poll if it is this fresh.
@@ -75,9 +73,8 @@ function readConfig(config) {
     scheduledOff,
     huum: huum.email && huum.password ? { email: huum.email, password: huum.password } : null,
     temperatureSensor,
-    fan: fan.enabled ? { name: fan.name || "Sauna Fan" } : null,
+    fanName: fan.name || "Sauna Fan",
     cooldownName: config.cooldownName || "Sauna Cooldown",
-    fanName: config.fanName || "Sauna Fan",
     debug: Boolean(config.debug),
   };
 }
@@ -93,9 +90,7 @@ export class ACInfinitySaunaPlatform {
     this.scheduleTimer = null;
     this.startupTimer = null;
     this.fanRefreshTimer = null;
-    this.fanOn = false;
     this.cooldownActive = false;
-    this.fanHoldUntil = 0;
     this.fanV2 = null;
     this.offSentAt = 0;
     this.fanStreak = new FailureStreak(log, "Fan state check");
@@ -155,10 +150,10 @@ export class ACInfinitySaunaPlatform {
 
     const active = [
       this.setUpCooldownSwitch(cfg.cooldownName),
-      cfg.fan ? this.setUpFanV2(cfg.fan.name) : this.setUpFanSwitch(cfg.fanName),
+      this.setUpFanV2(cfg.fanName),
     ];
     if (cfg.temperatureSensor) active.push(this.setUpTemperatureSensor(cfg.temperatureSensor.name));
-    // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1, or the fan switch once the Fanv2 is on
+    // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1, or the Sauna Fan switch from v0.2-0.5
     this.removeStaleAccessories(active);
     this.scheduleDailyOff();
 
@@ -238,31 +233,7 @@ export class ACInfinitySaunaPlatform {
     return accessory;
   }
 
-  // Stateful switch: shows whether the fan is spinning, and sets the port On or Off.
-  setUpFanSwitch(name) {
-    const { Characteristic } = this.api.hap;
-    const { accessory, service } = this.getAccessory("fan", name);
-    this.fanCharacteristic = service.getCharacteristic(Characteristic.On);
-    this.fanCharacteristic
-      .onGet(() => this.fanOn)
-      .onSet((value) => {
-        const on = Boolean(value);
-        this.log.info(`${name} switched ${on ? "on" : "off"}.`);
-        this.setFanState(on, { hold: true });
-        this.runAction(async () => {
-          try {
-            await (on ? this.fanOnAction() : this.fanOff(`${name} switch`));
-          } catch (e) {
-            this.fanHoldUntil = 0; // show the real state again on the next refresh
-            this.refreshFanState();
-            throw e;
-          }
-        });
-      });
-    return accessory;
-  }
-
-  // Fanv2 with on/off and speed. Replaces the fan switch when fan.enabled is set.
+  // Fanv2 with on/off and speed, showing the live fan level.
   setUpFanV2(name) {
     const { accessory, service } = this.getAccessory("fanv2", name, this.api.hap.Service.Fanv2);
     this.fanV2 = new SaunaFan({
@@ -428,31 +399,21 @@ export class ACInfinitySaunaPlatform {
     await this.refreshFanState();
   }
 
-  // Tell whichever fan accessory is in use what was just commanded.
+  // Tell the fan accessory what was just commanded.
   noteFanCommand(command) {
-    if (this.fanV2) this.fanV2.commanded(command);
-    else if (command.type === "auto") this.fanHoldUntil = 0;
-    else this.setFanState(command.type !== "off", { hold: true });
+    this.fanV2?.commanded(command);
   }
 
   // Every device-list read (fan check, sensor poll, cooldown check) updates the fan accessory.
   onPolledPort(portInfo) {
     const speak = Number(portInfo.speak) || 0;
     if (speak === 0) this.offSentAt = 0;
-    if (this.fanV2) this.fanV2.onSpeak(speak);
-    else this.setFanState(speak > 0);
+    this.fanV2?.onSpeak(speak);
   }
 
   // ---------- fan state ----------
 
-  setFanState(on, { hold = false } = {}) {
-    if (hold) this.fanHoldUntil = Date.now() + FAN_HOLD_MS;
-    else if (Date.now() < this.fanHoldUntil) return; // a read while the fan is still spinning up or down
-    this.fanOn = on;
-    this.fanCharacteristic?.updateValue(on);
-  }
-
-  // The switch shows on whenever the fan is spinning, including during an Auto cooldown.
+  // The fan shows its real level, including during an Auto cooldown.
   async refreshFanState() {
     try {
       const { portInfo } = await this.readPort();

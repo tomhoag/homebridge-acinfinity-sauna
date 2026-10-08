@@ -10,26 +10,17 @@ When you turn **Sauna Cooldown** on, the plugin:
 
 So the switch is **on for exactly as long as a cooldown is running**. Turning it off early cancels the cooldown and sets the fan port Off straight away. Automations can use "Sauna Cooldown turns off" to act when the sauna has cooled.
 
-It also adds a **Sauna Fan** switch:
+It also adds a **Sauna Fan**: a HomeKit fan with on/off and a speed slider. Home shows on/off and speed only.
 
-- It shows **on** whenever the fan is spinning, including during a cooldown. The plugin checks once a minute.
-- **Turning it on** cancels any cooldown and sets the port to **On** at the speed set on the controller. If that speed is 0, it uses 10.
-- **Turning it off** cancels any cooldown and sets the port **Off** straight away.
-- After you flip it, the switch keeps your choice for 2 minutes while the fan spins up or down, and then follows the fan again.
-
-If you leave the fan On, it will run during the next heat-up. **Daily Off time** (below) is a good backstop.
-
-### Fan with speed control (optional)
-
-Turn on **Fan control** to replace the Sauna Fan switch with a HomeKit **fan** that has a speed slider. The old switch is removed. Home shows on/off and speed only.
-
-- **Speed shows the fan's real level** (0–10 as 0–100%), read once a minute. Changes made with the controller's buttons show up at the next check.
+- **Speed shows the fan's real level** (0–10 as 0–100%), read once a minute. Changes made with the controller's buttons show up at the next check. During a cooldown, the fan shows on whenever it is spinning.
 - **Setting a speed** changes only the fan speed if a cooldown is running, so the fan still stops at the target temperature. Otherwise it ends any cooldown and sets the port **On** at that speed.
 - **Turning it on** without a speed sets the port **On** at the speed set on the controller, or 10 if that is 0. This also ends any cooldown.
 - **Turning it off**, or setting 0%, ends any cooldown and sets the port **Off**. The fan shows off straight away, and its speed winds down to 0 as it spins down.
 - **Slider drags send one change**, once the slider has been still for a second.
 - After a change, Home shows the new setting for up to 10 seconds while the fan gets up to speed, then follows the real fan again. The plugin also checks the fan straight after every change.
-- **Sauna Cooldown, Daily Off time and the cooldown's own Off** all update the fan, just as they do the switch.
+- **Sauna Cooldown, Daily Off time and the cooldown's own Off** all update the fan.
+
+If you leave the fan On, it will run during the next heat-up. **Daily Off time** (below) is a good backstop.
 
 ### Temperature sensor (optional)
 
@@ -57,7 +48,7 @@ If Homebridge restarts during a cooldown, the plugin loses track of it: the Saun
 |---|---|
 | UIS Controller 69 Pro | Yes (tested) |
 | UIS Controller 69 Pro+ | Yes (untested; same API) |
-| 89 AI+, Outlet AI, Outlet AI+ | Not yet. The plugin logs "Unsupported controller type" and adds no switches. |
+| 89 AI+, Outlet AI, Outlet AI+ | Not yet. The plugin logs "Unsupported controller type" and adds no accessories. |
 | 69 (base), 67 | No. These are Bluetooth only and have no cloud API. |
 
 ## Configuration
@@ -91,9 +82,8 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `temperatureSensor.enabled` | false | Adds the temperature sensor. |
 | `temperatureSensor.name` | `Sauna Temperature` | Sensor name. |
 | `temperatureSensor.pollIntervalSeconds` | 120 | How often to read the probe, 30–600. |
-| `fan.enabled` | false | Replaces the fan switch with a fan that has speed control. |
-| `fan.name` | `Sauna Fan` | Fan name, when `fan.enabled` is on. |
-| `cooldownName`, `fanName` | `Sauna Cooldown`, `Sauna Fan` | Switch names. `fanName` is used only when `fan.enabled` is off. |
+| `cooldownName` | `Sauna Cooldown` | Cooldown switch name. |
+| `fan.name` | `Sauna Fan` | Fan name. |
 | `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
 
 ## Things to know

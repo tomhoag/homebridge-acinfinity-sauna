@@ -2,7 +2,7 @@
   "pluginAlias": "ACInfinitySauna",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** switch that shows whether the fan is running and turns it On or Off (or, optionally, a fan with speed control). Supports the UIS Controller 69 Pro and 69 Pro+.",
+  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** with on/off and speed control that shows the fan's real speed. Supports the UIS Controller 69 Pro and 69 Pro+.",
   "schema": {
     "type": "object",
     "properties": {
@@ -100,14 +100,9 @@
         }
       },
       "fan": {
-        "title": "Fan control",
+        "title": "Fan",
         "type": "object",
         "properties": {
-          "enabled": {
-            "title": "Replace the fan switch with a fan that has speed control",
-            "type": "boolean",
-            "default": false
-          },
           "name": {
             "title": "Fan name",
             "type": "string",
@@ -119,11 +114,6 @@
         "title": "Cooldown switch name",
         "type": "string",
         "default": "Sauna Cooldown"
-      },
-      "fanName": {
-        "title": "Fan switch name",
-        "type": "string",
-        "default": "Sauna Fan"
       },
       "debug": {
         "title": "Debug logging",
@@ -169,22 +159,9 @@
     },
     {
       "type": "fieldset",
-      "title": "Fan control (optional)",
-      "expandable": true,
-      "items": [
-        "fan.enabled",
-        { "key": "fan.name", "condition": { "functionBody": "return model.fan && model.fan.enabled;" } }
-      ]
-    },
-    {
-      "type": "fieldset",
       "title": "Advanced",
       "expandable": true,
-      "items": [
-        "cooldownName",
-        { "key": "fanName", "condition": { "functionBody": "return !(model.fan && model.fan.enabled);" } },
-        "debug"
-      ]
+      "items": ["cooldownName", "fan.name", "debug"]
     }
   ]
 }
