@@ -78,7 +78,7 @@ function readConfig(config) {
 
 export class ACInfinitySaunaPlatform {
   constructor(log, config, api) {
-    this.log = log;
+    this.log = config?.debug ? withVisibleDebug(log) : log;
     this.api = api;
     this.cachedAccessories = new Map();
     this.actions = Promise.resolve(); // user actions, poll ticks and scheduled Off run one at a time
@@ -90,10 +90,10 @@ export class ACInfinitySaunaPlatform {
     this.cooldownActive = false;
     this.fanV2 = null;
     this.offSentAt = 0;
-    this.fanStreak = new FailureStreak(log, "Fan state check");
+    this.fanStreak = new FailureStreak(this.log, "Fan state check");
     this.sensorTimer = null;
     this.temperatureC = null;
-    this.sensorStreak = new FailureStreak(log, "Temperature poll");
+    this.sensorStreak = new FailureStreak(this.log, "Temperature poll");
 
     try {
       this.cfg = readConfig(config ?? {});
@@ -102,7 +102,7 @@ export class ACInfinitySaunaPlatform {
       this.log.error(`Configuration error: ${e.message} No accessories will be exposed.`);
     }
 
-    api.on("didFinishLaunching", () => this.start());
+    api.on("didFinishLaunching", () => this.startSafely());
     api.on("shutdown", () => {
       this.cancelCooldownPoll();
       clearTimeout(this.scheduleTimer);
@@ -115,6 +115,11 @@ export class ACInfinitySaunaPlatform {
 
   configureAccessory(accessory) {
     this.cachedAccessories.set(accessory.UUID, accessory);
+  }
+
+  // An unexpected startup error must never become an unhandled rejection, which can stop Homebridge.
+  startSafely() {
+    this.start().catch((e) => this.log.error(`Startup failed unexpectedly: ${e.stack ?? e.message}`));
   }
 
   async start() {
@@ -132,7 +137,7 @@ export class ACInfinitySaunaPlatform {
         return this.removeAllAccessories();
       }
       this.log.error(`Could not reach AC Infinity (${e.message}). Retrying in ${STARTUP_RETRY_MS / 1000}s.`);
-      this.startupTimer = setTimeout(() => this.start(), STARTUP_RETRY_MS);
+      this.startupTimer = setTimeout(() => this.startSafely(), STARTUP_RETRY_MS);
       return;
     }
 
@@ -564,6 +569,17 @@ function readProbeC(controller) {
   if (!Number.isFinite(n) || n === 0) return null;
   const c = n / 100;
   return c < PROBE_MIN_C || c > PROBE_MAX_C ? null : c;
+}
+
+// Homebridge hides log.debug unless Homebridge itself runs in debug mode. With the plugin's own
+// debug setting on, write debug lines at info level so that setting works on its own.
+function withVisibleDebug(log) {
+  const wrapped = (...args) => log.info(...args);
+  wrapped.info = (...args) => log.info(...args);
+  wrapped.warn = (...args) => log.warn(...args);
+  wrapped.error = (...args) => log.error(...args);
+  wrapped.debug = (...args) => log.info("[debug]", ...args);
+  return wrapped;
 }
 
 // Logs one warning per run of failures, and one info line when it recovers.

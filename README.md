@@ -2,6 +2,9 @@
 
 A Homebridge plugin that adds a **Sauna Cooldown** switch to HomeKit for a sauna vented by an AC Infinity UIS fan.
 
+> [!WARNING]
+> This plugin uses the AC Infinity and HUUM cloud APIs, which are **undocumented and unofficial**. They were learned from other open-source projects (see [Acknowledgments](#acknowledgments)). Either company could change them at any time, which would stop the plugin working until it is updated.
+
 When you turn **Sauna Cooldown** on, the plugin:
 
 1. Stops the HUUM sauna heater (optional).
@@ -61,7 +64,7 @@ Or from the command line:
 npm install -g homebridge-acinfinity-sauna
 ```
 
-Requires Homebridge 1.8 or 2.x and Node.js 18 or later.
+Requires Homebridge 1.8 or 2.x, on Node.js 20, 22, 24 or 26.
 
 ## Configuration
 
@@ -95,7 +98,7 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `temperatureSensor.pollIntervalSeconds` | 120 | How often to read the probe, 30–600. |
 | `cooldownName` | `Sauna Cooldown` | Cooldown switch name. |
 | `fan.name` | `Sauna Fan` | Fan name. |
-| `debug` | false | Logs API request and response bodies. Passwords and tokens are never logged. |
+| `debug` | false | Logs each API call and the response fields the plugin uses, at the normal log level, so you don't need Homebridge's own debug mode. Passwords, tokens and device identifiers are never logged. |
 
 ## Things to know
 

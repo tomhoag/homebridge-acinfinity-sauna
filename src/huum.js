@@ -26,7 +26,7 @@ export class HuumClient {
     });
     if (!res.ok) throw new Error(`HUUM HTTP ${res.status} on ${action}`);
     const body = await res.json();
-    if (this.debug) this.log.debug(`HUUM <- ${action}`, JSON.stringify(body));
+    if (this.debug) this.log.debug(`HUUM <- ${action}`, JSON.stringify({ statusCode: body?.statusCode, temperature: body?.temperature }));
     return body;
   }
 

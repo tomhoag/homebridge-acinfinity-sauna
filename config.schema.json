@@ -114,7 +114,7 @@
         "title": "Debug logging",
         "type": "boolean",
         "default": false,
-        "description": "Log API request and response bodies. Passwords and tokens are never logged."
+        "description": "Log each API call and the response fields the plugin uses. Works without Homebridge debug mode. Passwords, tokens and device identifiers are never logged."
       }
     }
   },

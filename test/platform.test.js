@@ -32,7 +32,7 @@ function makeServer({ devType = 11, ports = [1, 2], speak = 10, temp = 4000 } = 
       // devId as a bare JSON number, the worst case for precision.
       const ports = s.ports.map((p) => `{"port":${p},"portName":"Fan ${p}","online":1,"speak":${s.speak}}`).join(",");
       const temp = s.temp === undefined ? "" : `"temperature":${JSON.stringify(s.temp)},`;
-      return json(`{"code":200,"data":[{"devId":${DEV_ID},"devName":"Sauna","devType":${s.devType},"deviceInfo":{${temp}"ports":[${ports}]}}]}`);
+      return json(`{"code":200,"data":[{"devId":${DEV_ID},"devName":"Sauna","devType":${s.devType},"deviceInfo":{${temp}"devMacAddr":"AA:BB:CC:DD:EE:FF","wifiName":"HomeNet","ports":[${ports}]}}]}`);
     }
     if (u.pathname === "/api/dev/getdevModeSettingList") {
       return json({ code: 200, data: s.settings });
@@ -658,4 +658,53 @@ test("Fanv2: Daily Off and the cooldown's own Off update the fan", async () => {
   await platform.runAction(() => platform.fanOff("scheduled Off"));
   assert.equal(fan.active.value, 0);
   assert.equal(lastWrite().atType, "1");
+});
+
+// ---------- logging and startup safety ----------
+
+test("debug setting: logs at info level without Homebridge debug mode", async () => {
+  const { log } = await startPlatform({ ...baseConfig, debug: true });
+  const debugLines = log.lines.filter((l) => l.startsWith("info [debug]"));
+  assert.ok(debugLines.some((l) => l.includes("AC Infinity <- /api/user/devInfoListAll")));
+  assert.ok(!log.lines.some((l) => l.startsWith("debug ")), "nothing left at the hidden debug level from the API client");
+});
+
+test("debug logs keep sensor fields but drop device identifiers and secrets", async () => {
+  const { platform, log } = await startPlatform({ ...baseConfig, debug: true });
+  await platform.endSauna();
+  const all = log.lines.join("\n");
+  const list = log.lines.find((l) => l.includes("<- /api/user/devInfoListAll"));
+  assert.ok(list.includes('"temperature":4000'), "probe reading kept for diagnosis");
+  assert.ok(list.includes('"speak"'));
+  for (const secret of ["AA:BB:CC:DD:EE:FF", "HomeNet", "x".repeat(25), "tok123", "a@b.c", "h@b.c", "hp"]) {
+    assert.ok(!all.includes(secret), `"${secret}" must not be logged`);
+  }
+  const settings = log.lines.find((l) => l.includes("<- /api/dev/getdevModeSettingList"));
+  assert.ok(settings.includes('"atType"') && !settings.includes("devSetting"));
+  assert.ok(log.lines.some((l) => l.includes("addDevMode devId") && l.includes("atType=3")));
+});
+
+test("debug off: no API bodies in the log", async () => {
+  const { platform, log } = await startPlatform();
+  await platform.endSauna();
+  assert.ok(!log.lines.some((l) => l.includes("AC Infinity <-") || l.includes("[debug]")));
+});
+
+test("an unexpected startup error is logged, not left as an unhandled rejection", async () => {
+  const api = makeApi();
+  started.push(api);
+  api.registerPlatformAccessories = () => { throw new Error("cache corrupt"); };
+  const log = makeLog();
+  let unhandled = null;
+  const onUnhandled = (e) => { unhandled = e; };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    new ACInfinitySaunaPlatform(log, baseConfig, api);
+    api.emit("didFinishLaunching");
+    await new Promise((r) => setTimeout(r, 1500));
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+  assert.equal(unhandled, null);
+  assert.ok(log.lines.some((l) => l.startsWith("error") && l.includes("Startup failed unexpectedly") && l.includes("cache corrupt")));
 });

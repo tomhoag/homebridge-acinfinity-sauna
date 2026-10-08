@@ -57,6 +57,42 @@ function parseJsonPreservingBigInts(text) {
   return JSON.parse(text.replace(/([:,[]\s*)(-?\d{16,})(?=\s*[,}\]])/g, '$1"$2"'));
 }
 
+// Debug logs show only what the plugin uses, never whole responses: those also carry device
+// identifiers such as MAC addresses. Sensor-like fields are kept to help diagnose probe readings.
+const SENSOR_FIELD = /temp|humi|vpd|sensor|probe/i;
+const PORT_SETTING_FIELDS = [
+  "atType", "modeType", "onSpead", "offSpead", "activeHt", "devHt", "devHtf", "activeLt", "activeHh", "activeLh",
+];
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) if (obj?.[k] !== undefined) out[k] = obj[k];
+  return out;
+}
+
+function sensorFields(obj) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj ?? {})) {
+    if (SENSOR_FIELD.test(k) && (v === null || typeof v !== "object")) out[k] = v;
+  }
+  return out;
+}
+
+function summarizeResponse(path, body) {
+  const summary = pick(body, ["code", "msg"]);
+  const data = body?.data;
+  if (path === "/api/user/devInfoListAll" && Array.isArray(data)) {
+    summary.controllers = data.map((c) => ({
+      ...pick(c, ["devId", "devName", "devType"]),
+      ...sensorFields(c.deviceInfo),
+      ports: (c.deviceInfo?.ports ?? []).map((p) => pick(p, ["port", "portName", "online", "speak", "loadState", "curMode"])),
+    }));
+  } else if (path === "/api/dev/getdevModeSettingList" && data) {
+    summary.settings = { ...pick(data, PORT_SETTING_FIELDS), ...sensorFields(data) };
+  }
+  return summary;
+}
+
 function redact(value) {
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === "object") {
@@ -95,12 +131,13 @@ export class ACInfinityClient {
     if (form) init.body = new URLSearchParams(form);
     const url = query ? `${HOST}${path}?${new URLSearchParams(query)}` : `${HOST}${path}`;
 
-    if (this.debug) this.log.debug(`AC Infinity -> ${path}`, JSON.stringify(redact(form ?? query ?? {})));
+    // addDevMode sends every port setting; its changes are logged separately by setPortControls.
+    if (this.debug) this.log.debug(`AC Infinity -> ${path}`, query ? "(port settings)" : JSON.stringify(redact(form ?? {})));
     try {
       const res = await fetch(url, init);
       if (!res.ok) throw new Error(`AC Infinity HTTP ${res.status} on ${path}`);
       const body = parseJsonPreservingBigInts(await res.text());
-      if (this.debug) this.log.debug(`AC Infinity <- ${path}`, JSON.stringify(redact(body)));
+      if (this.debug) this.log.debug(`AC Infinity <- ${path}`, JSON.stringify(summarizeResponse(path, body)));
       return body;
     } finally {
       this.lastRequestAt = Date.now();
