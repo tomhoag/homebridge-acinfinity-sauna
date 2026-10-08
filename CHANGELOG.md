@@ -10,6 +10,7 @@ All notable changes to this plugin. Versions follow [semantic versioning](https:
 - The README now warns near the top that the plugin relies on undocumented cloud APIs.
 - Supported Node.js versions are now stated precisely: 20, 22, 24 and 26.
 - Added this changelog, and tests that run on every push and pull request.
+- Added a funding link, so the Homebridge UI shows a Donate button.
 
 ## 1.0.0
 

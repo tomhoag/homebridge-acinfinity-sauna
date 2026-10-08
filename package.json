@@ -26,6 +26,10 @@
     "url": "https://github.com/tomhoag/homebridge-acinfinity-sauna/issues"
   },
   "homepage": "https://github.com/tomhoag/homebridge-acinfinity-sauna#readme",
+  "funding": {
+    "type": "buymeacoffee",
+    "url": "https://buymeacoffee.com/offbyonestudio"
+  },
   "engines": {
     "node": "^20.18.0 || ^22.10.0 || ^24.0.0 || ^26.0.0",
     "homebridge": "^1.8.0 || ^2.0.0"
