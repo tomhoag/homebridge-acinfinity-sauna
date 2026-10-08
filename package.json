@@ -1,7 +1,7 @@
 {
   "name": "homebridge-acinfinity-sauna",
   "displayName": "AC Infinity Sauna",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "Sauna cooldown for HomeKit: stops a HUUM heater and runs an AC Infinity UIS fan until the sauna cools, then turns it off. Includes fan speed control and a sauna temperature sensor.",
   "type": "module",
   "main": "src/index.js",
