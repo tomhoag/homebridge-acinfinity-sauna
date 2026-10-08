@@ -51,6 +51,18 @@ If Homebridge restarts during a cooldown, the plugin loses track of it: the Saun
 | 89 AI+, Outlet AI, Outlet AI+ | Not yet. The plugin logs "Unsupported controller type" and adds no accessories. |
 | 69 (base), 67 | No. These are Bluetooth only and have no cloud API. |
 
+## Installation
+
+In the Homebridge UI, open **Plugins**, search for **AC Infinity Sauna**, and click **Install**. Then fill in the plugin's settings and restart Homebridge.
+
+Or from the command line:
+
+```sh
+npm install -g homebridge-acinfinity-sauna
+```
+
+Requires Homebridge 1.8 or 2.x and Node.js 18 or later.
+
 ## Configuration
 
 Configure it in the Homebridge UI, or add this to `config.json`:
