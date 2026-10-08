@@ -2,6 +2,10 @@
 
 All notable changes to this plugin. Versions follow [semantic versioning](https://semver.org).
 
+## 1.0.2
+
+- Declares HomeKit (HAP) support with the `supports-hap` keyword, as the Homebridge verification checks require. No code changes.
+
 ## 1.0.1
 
 - An unexpected error during startup is now logged instead of risking a Homebridge crash.
