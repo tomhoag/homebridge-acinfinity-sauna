@@ -59,7 +59,7 @@ function makeApi() {
     setCharacteristic() { return this; }
     updateCharacteristic(c, v) { this.getCharacteristic(c).value = v; return this; }
   }
-  const Service_ = { AccessoryInformation: "info", Switch: "switch", TemperatureSensor: "temperature" };
+  const Service_ = { AccessoryInformation: "info", Switch: "switch", TemperatureSensor: "temperature", Fanv2: "fanv2" };
   class HapStatusError extends Error { constructor(status) { super(`HAP status ${status}`); this.hapStatus = status; } }
   class PlatformAccessory {
     constructor(displayName, UUID) { this.displayName = displayName; this.UUID = UUID; this.services = new Map([["info", new Service()]]); }
@@ -70,7 +70,8 @@ function makeApi() {
   const api = {
     hap: {
       Service: Service_,
-      Characteristic: { On: "On", Name: "Name", Manufacturer: "M", Model: "Mo", SerialNumber: "S", CurrentTemperature: "CurrentTemperature", StatusActive: "StatusActive" },
+      Characteristic: { On: "On", Name: "Name", Manufacturer: "M", Model: "Mo", SerialNumber: "S", CurrentTemperature: "CurrentTemperature", StatusActive: "StatusActive",
+        Active: { ACTIVE: 1, INACTIVE: 0 }, RotationSpeed: "RotationSpeed", CurrentFanState: { INACTIVE: 0, IDLE: 1, BLOWING_AIR: 2 } },
       HapStatusError,
       HAPStatus: { SERVICE_COMMUNICATION_FAILURE: -70402 },
       uuid: { generate: (s) => `uuid:${s}` },
@@ -298,12 +299,12 @@ test("fan switch on: cancels the cooldown, sets On at the controller's speed", a
   assert.equal(lastWrite().onSpead, "7", "speed set at the controller is kept");
 });
 
-test("fan switch on: uses the cooldown speed when the controller's speed is 0", async () => {
+test("fan switch on: uses 10 when the controller's speed is 0", async () => {
   server.settings.onSpead = 0;
   const { api, platform } = await startPlatform({ ...baseConfig, cooldown: { fanSpeed: 4 } });
   fanSwitch(api).set(true);
   await platform.actions;
-  assert.equal(lastWrite().onSpead, "4");
+  assert.equal(lastWrite().onSpead, "10");
 });
 
 test("fan switch off: cancels the cooldown and writes Off", async () => {
@@ -405,7 +406,7 @@ test("sensor shows readings over 100 °C", async () => {
 
 test("sensor poll pushes each new value", async () => {
   const { api, platform } = await startPlatform(sensorConfig);
-  server.temp = 3150;
+  server.temp = 3150; platform.aci.devices = null;
   await platform.pollTemperature();
   assert.equal(sensorChar(api, "CurrentTemperature").value, 31.5);
 });
@@ -413,7 +414,7 @@ test("sensor poll pushes each new value", async () => {
 for (const [label, bad] of [["missing", undefined], ["exactly 0", 0], ["below −20 °C", -2500], ["above 130 °C", 13100], ["not a number", "n/a"]]) {
   test(`probe reading ${label} counts as a failed poll`, async () => {
     const { api, platform } = await startPlatform(sensorConfig);
-    server.temp = bad;
+    server.temp = bad; platform.aci.devices = null;
     await platform.pollTemperature();
     assert.equal(platform.sensorStreak.count, 1);
     assert.equal(await sensorChar(api, "CurrentTemperature").get(), 40, "last reading kept");
@@ -425,6 +426,7 @@ test("sensor: No Response after 3 failed polls, one warning, recovers on success
   const t = sensorChar(api, "CurrentTemperature");
   const active = sensorChar(api, "StatusActive");
   const ok = globalThis.fetch;
+  platform.aci.devices = null; // failed fetches leave no cache, so every poll below fetches
   globalThis.fetch = () => Promise.reject(new Error("network down"));
   await platform.pollTemperature();
   await platform.pollTemperature();
@@ -461,6 +463,16 @@ test("cooldown check reuses a device list under 60 s old", async () => {
   assert.equal(listCalls(), before + 1);
 });
 
+test("sensor poll reuses a device list under 60 s old", async () => {
+  const { platform } = await startPlatform(sensorConfig);
+  const before = listCalls();
+  await platform.pollTemperature();
+  assert.equal(listCalls(), before, "no extra devInfoListAll call");
+  platform.aci.devices.at -= 61 * 1000;
+  await platform.pollTemperature();
+  assert.equal(listCalls(), before + 1);
+});
+
 test("polls running at the same moment share one devInfoListAll call", async () => {
   const { platform } = await startPlatform(sensorConfig);
   const before = listCalls();
@@ -492,4 +504,232 @@ test("fan state failures: one warning per streak, info on recovery", async () =>
   await platform.refreshFanState();
   assert.equal(log.lines.filter((l) => l.includes("Fan state check failed")).length, 1);
   assert.ok(log.lines.some((l) => l.includes("Fan state check recovered after 2")));
+});
+
+// ---------- fan with speed control (Fanv2) ----------
+
+const fanConfig = { ...baseConfig, fan: { enabled: true } };
+const fanV2 = (api) => {
+  const svc = api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:fanv2").getService("fanv2");
+  const get = (c) => svc.getCharacteristic(c);
+  return { active: get(api.hap.Characteristic.Active), speed: get("RotationSpeed"), state: get(api.hap.Characteristic.CurrentFanState) };
+};
+const writes = () => server.calls.filter((c) => c.path === "/api/dev/addDevMode");
+
+// Start with the fan enabled and short debounce/hold times so tests run quickly.
+async function startFan(config = fanConfig) {
+  const started_ = await startPlatform(config);
+  started_.platform.fanV2.debounceMs = 20;
+  return { ...started_, fan: fanV2(started_.api) };
+}
+const settle = async (platform, ms = 60) => {
+  await new Promise((r) => setTimeout(r, ms));
+  await platform.actions;
+};
+
+test("fan enabled: Fanv2 replaces the fan switch, speed in steps of 10%", async () => {
+  const api = makeApi();
+  started.push(api);
+  const platform = new ACInfinitySaunaPlatform(makeLog(), fanConfig, api);
+  platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:fan", displayName: "Sauna Fan" });
+  await platform.start();
+  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["Sauna Fan"]);
+  assert.ok(api.registered.some((a) => a.UUID === "uuid:ACInfinitySauna:fanv2"));
+  assert.deepEqual(fanV2(api).speed.props, { minValue: 0, maxValue: 100, minStep: 10 });
+});
+
+test("fan disabled: the switch is used and no Fanv2 appears", async () => {
+  const { api } = await startPlatform();
+  assert.ok(api.registered.some((a) => a.UUID === "uuid:ACInfinitySauna:fan"));
+  assert.ok(!api.registered.some((a) => a.UUID === "uuid:ACInfinitySauna:fanv2"));
+});
+
+test("Fanv2 shows the real fan level from the poll", async () => {
+  server.speak = 6;
+  const { platform, fan } = await startFan();
+  assert.equal(await fan.active.get(), 1);
+  assert.equal(await fan.speed.get(), 60);
+  assert.equal(await fan.state.get(), 2);
+  server.speak = 0;
+  await platform.refreshFanState();
+  assert.equal(fan.active.value, 0);
+  assert.equal(fan.speed.value, 0);
+  assert.equal(fan.state.value, 1, "IDLE");
+});
+
+test("Fanv2: the sensor poll updates the fan too", async () => {
+  server.speak = 0;
+  const { platform, fan } = await startFan({ ...fanConfig, temperatureSensor: { enabled: true } });
+  server.speak = 4; platform.aci.devices = null;
+  await platform.pollTemperature();
+  assert.equal(fan.speed.value, 40);
+});
+
+test("Fanv2: 50% with the port Off sets On at level 5; offSpead passes through", async () => {
+  server.speak = 0;
+  server.settings = { ...server.settings, atType: 1, offSpead: 3 };
+  const { platform, fan } = await startFan();
+  const listsBefore = listCalls();
+  fan.speed.set(50);
+  assert.equal(await fan.speed.get(), 50, "shown at once");
+  await settle(platform);
+  assert.equal(writes().length, 1);
+  const w = lastWrite();
+  assert.deepEqual([w.atType, w.onSpead, w.offSpead], ["2", "5", "3"]);
+  assert.equal(listCalls(), listsBefore + 1, "one poll straight after the write");
+  assert.equal(await fan.speed.get(), 50, "commanded value held while the fan spins up");
+});
+
+test("Fanv2: during a cooldown (Auto), a speed change keeps Auto", async () => {
+  const { platform, fan } = await startFan();
+  await platform.runAction(() => platform.endSauna());
+  server.settings = { ...server.settings, atType: 3 };
+  fan.speed.set(30);
+  await settle(platform);
+  const w = lastWrite();
+  assert.deepEqual([w.atType, w.onSpead], ["3", "3"]);
+  assert.ok(platform.pollTimer, "cooldown still running");
+  assert.equal(platform.cooldownActive, true);
+});
+
+test("Fanv2: a speed change outside Auto ends the cooldown", async () => {
+  const { platform, fan } = await startFan();
+  await platform.runAction(() => platform.endSauna());
+  server.settings = { ...server.settings, atType: 2 };
+  fan.speed.set(70);
+  await settle(platform);
+  assert.deepEqual([lastWrite().atType, lastWrite().onSpead], ["2", "7"]);
+  assert.equal(platform.cooldownActive, false);
+});
+
+test("Fanv2: on with no speed uses the controller's speed, or 10 if it is 0", async () => {
+  server.speak = 0;
+  const { platform, fan } = await startFan();
+  fan.active.set(1);
+  await settle(platform);
+  assert.deepEqual([lastWrite().atType, lastWrite().onSpead], ["2", "7"]);
+
+  server.settings = { ...server.settings, onSpead: 0 };
+  fan.active.set(0);
+  await settle(platform);
+  fan.active.set(1);
+  await settle(platform);
+  assert.deepEqual([lastWrite().atType, lastWrite().onSpead], ["2", "10"]);
+});
+
+test("Fanv2 off: writes Off, ends the cooldown, shows off while the speed winds down", async () => {
+  server.speak = 8;
+  const { platform, fan } = await startFan();
+  await platform.runAction(() => platform.endSauna());
+  fan.active.set(0);
+  await settle(platform);
+  assert.equal(lastWrite().atType, "1");
+  assert.equal(platform.cooldownActive, false);
+  server.speak = 5; // spinning down
+  platform.fanV2.hold = null;
+  await platform.refreshFanState();
+  assert.equal(fan.active.value, 0, "still shown off");
+  assert.equal(fan.speed.value, 50, "real speed winding down");
+  server.speak = 0;
+  await platform.refreshFanState();
+  assert.equal(fan.speed.value, 0);
+  server.speak = 3; // turned on at the controller afterwards
+  await platform.refreshFanState();
+  assert.equal(fan.active.value, 1, "follows the real fan again");
+});
+
+test("Fanv2: speed 0 is Off", async () => {
+  const { platform, fan } = await startFan();
+  fan.speed.set(0);
+  await settle(platform);
+  assert.equal(lastWrite().atType, "1");
+});
+
+test("Fanv2: a quick slider drag sends one write with the final value", async () => {
+  server.settings = { ...server.settings, atType: 1 };
+  const { platform, fan } = await startFan();
+  platform.fanV2.debounceMs = 150;
+  for (const v of [10, 30, 60, 80]) {
+    fan.speed.set(v);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  await settle(platform, 250);
+  assert.equal(writes().length, 1);
+  assert.equal(lastWrite().onSpead, "8");
+});
+
+test("Fanv2: Active on plus a speed in one tap is one write", async () => {
+  server.settings = { ...server.settings, atType: 1 };
+  const { platform, fan } = await startFan();
+  fan.active.set(1);
+  fan.speed.set(40);
+  await settle(platform);
+  assert.equal(writes().length, 1);
+  assert.deepEqual([lastWrite().atType, lastWrite().onSpead], ["2", "4"]);
+});
+
+test("Fanv2: the hold ends when the poll shows the new level, or when it times out", async () => {
+  server.speak = 0;
+  server.settings = { ...server.settings, atType: 1 };
+  const { platform, fan } = await startFan();
+  fan.speed.set(50);
+  await settle(platform);
+  assert.equal(fan.speed.value, 50, "held while the fan spins up");
+  server.speak = 5;
+  await platform.refreshFanState();
+  assert.equal(platform.fanV2.hold, null, "change seen: hold over");
+
+  // Timeout, without API calls (their 0.5 s spacing would outlast a short hold).
+  platform.fanV2.holdMs = 100;
+  platform.fanV2.commanded({ type: "speed", level: 9 });
+  platform.fanV2.onSpeak(6); // never reaches 9
+  assert.equal(fan.speed.value, 90, "still held");
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(fan.speed.value, 60, "hold timed out: real level");
+});
+
+test("Fanv2: a failed write shows the real fan again", async () => {
+  server.speak = 0;
+  const { platform, fan, log } = await startFan();
+  const ok = globalThis.fetch;
+  globalThis.fetch = (url, init) => (String(url).includes("addDevMode") ? Promise.reject(new Error("boom")) : ok(url, init));
+  fan.speed.set(50);
+  await settle(platform);
+  assert.equal(fan.speed.value, 0);
+  assert.equal(fan.active.value, 0);
+  assert.ok(log.lines.some((l) => l.startsWith("error") && l.includes("boom")));
+});
+
+test("Fanv2: right after Off, a reported Auto is not trusted", async () => {
+  server.speak = 8;
+  const { platform, fan } = await startFan();
+  server.settings = { ...server.settings, atType: 3 }; // controller still reports Auto while spinning down
+  fan.active.set(0);
+  await settle(platform);
+  fan.speed.set(40);
+  await settle(platform);
+  assert.deepEqual([lastWrite().atType, lastWrite().onSpead], ["2", "4"]);
+});
+
+test("Fanv2: Sauna Cooldown takes over the fan", async () => {
+  server.speak = 0;
+  const { api, platform, fan } = await startFan();
+  fan.active.set(0);
+  await settle(platform);
+  cooldownSwitch(api).set(true);
+  await platform.actions;
+  assert.equal(lastWrite().atType, "3");
+  assert.equal(lastWrite().onSpead, "10");
+  assert.equal(platform.fanV2.hold, null);
+  server.speak = 10;
+  await platform.refreshFanState();
+  assert.equal(fan.active.value, 1, "not stuck showing off after the earlier Off");
+});
+
+test("Fanv2: Daily Off and the cooldown's own Off update the fan", async () => {
+  server.speak = 0;
+  const { platform, fan } = await startFan();
+  await platform.runAction(() => platform.fanOff("scheduled Off"));
+  assert.equal(fan.active.value, 0);
+  assert.equal(lastWrite().atType, "1");
 });

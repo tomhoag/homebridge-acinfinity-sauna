@@ -2,7 +2,7 @@
   "pluginAlias": "ACInfinitySauna",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** switch that shows whether the fan is running and turns it On or Off. Supports the UIS Controller 69 Pro and 69 Pro+.",
+  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** switch that shows whether the fan is running and turns it On or Off (or, optionally, a fan with speed control). Supports the UIS Controller 69 Pro and 69 Pro+.",
   "schema": {
     "type": "object",
     "properties": {
@@ -99,6 +99,22 @@
           }
         }
       },
+      "fan": {
+        "title": "Fan control",
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "title": "Replace the fan switch with a fan that has speed control",
+            "type": "boolean",
+            "default": false
+          },
+          "name": {
+            "title": "Fan name",
+            "type": "string",
+            "default": "Sauna Fan"
+          }
+        }
+      },
       "cooldownName": {
         "title": "Cooldown switch name",
         "type": "string",
@@ -153,9 +169,22 @@
     },
     {
       "type": "fieldset",
+      "title": "Fan control (optional)",
+      "expandable": true,
+      "items": [
+        "fan.enabled",
+        { "key": "fan.name", "condition": { "functionBody": "return model.fan && model.fan.enabled;" } }
+      ]
+    },
+    {
+      "type": "fieldset",
       "title": "Advanced",
       "expandable": true,
-      "items": ["cooldownName", "fanName", "debug"]
+      "items": [
+        "cooldownName",
+        { "key": "fanName", "condition": { "functionBody": "return !(model.fan && model.fan.enabled);" } },
+        "debug"
+      ]
     }
   ]
 }

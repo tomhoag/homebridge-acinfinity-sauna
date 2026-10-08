@@ -1,5 +1,6 @@
 import { ACInfinityClient, AT_TYPE } from "./acinfinity.js";
 import { HuumClient, HUUM_STATUS } from "./huum.js";
+import { SaunaFan } from "./fanv2.js";
 
 export const PLUGIN_NAME = "homebridge-acinfinity-sauna";
 export const PLATFORM_NAME = "ACInfinitySauna";
@@ -10,8 +11,10 @@ const STARTUP_RETRY_MS = 60 * 1000;
 const FAN_REFRESH_MS = 60 * 1000;
 // After a switch change, keep showing the requested state while the fan spins up or down.
 const FAN_HOLD_MS = 2 * 60 * 1000;
-// The cooldown check reuses a device list fetched by another poll if it is this fresh.
-const COOLDOWN_CACHE_MAX_AGE_MS = 60 * 1000;
+// The controller reports its old mode until the fan stops after an Off, for up to about this long.
+const OFF_READBACK_LAG_MS = 2 * 60 * 1000;
+// The sensor poll and cooldown check reuse a device list fetched by another poll if it is this fresh.
+const SHARED_READING_MAX_AGE_MS = 60 * 1000;
 // After this many failed polls in a row, the temperature sensor shows No Response.
 const SENSOR_FAILURE_LIMIT = 3;
 // Believable probe readings, in °C. Anything else, a missing value or exactly 0 is not a reading.
@@ -52,6 +55,8 @@ function readConfig(config) {
     temperatureSensor = { name: sensor.name || "Sauna Temperature", intervalMs: pollIntervalSeconds * 1000 };
   }
 
+  const fan = config.fan ?? {};
+
   let scheduledOff = null;
   if (config.scheduledOffTime) {
     const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(config.scheduledOffTime).trim());
@@ -70,6 +75,7 @@ function readConfig(config) {
     scheduledOff,
     huum: huum.email && huum.password ? { email: huum.email, password: huum.password } : null,
     temperatureSensor,
+    fan: fan.enabled ? { name: fan.name || "Sauna Fan" } : null,
     cooldownName: config.cooldownName || "Sauna Cooldown",
     fanName: config.fanName || "Sauna Fan",
     debug: Boolean(config.debug),
@@ -90,6 +96,8 @@ export class ACInfinitySaunaPlatform {
     this.fanOn = false;
     this.cooldownActive = false;
     this.fanHoldUntil = 0;
+    this.fanV2 = null;
+    this.offSentAt = 0;
     this.fanStreak = new FailureStreak(log, "Fan state check");
     this.sensorTimer = null;
     this.temperatureC = null;
@@ -109,6 +117,7 @@ export class ACInfinitySaunaPlatform {
       clearTimeout(this.startupTimer);
       clearInterval(this.fanRefreshTimer);
       clearInterval(this.sensorTimer);
+      this.fanV2?.stop();
     });
   }
 
@@ -146,10 +155,11 @@ export class ACInfinitySaunaPlatform {
 
     const active = [
       this.setUpCooldownSwitch(cfg.cooldownName),
-      this.setUpFanSwitch(cfg.fanName),
+      cfg.fan ? this.setUpFanV2(cfg.fan.name) : this.setUpFanSwitch(cfg.fanName),
     ];
     if (cfg.temperatureSensor) active.push(this.setUpTemperatureSensor(cfg.temperatureSensor.name));
-    this.removeStaleAccessories(active); // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1
+    // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1, or the fan switch once the Fanv2 is on
+    this.removeStaleAccessories(active);
     this.scheduleDailyOff();
 
     await this.refreshFanState();
@@ -252,6 +262,30 @@ export class ACInfinitySaunaPlatform {
     return accessory;
   }
 
+  // Fanv2 with on/off and speed. Replaces the fan switch when fan.enabled is set.
+  setUpFanV2(name) {
+    const { accessory, service } = this.getAccessory("fanv2", name, this.api.hap.Service.Fanv2);
+    this.fanV2 = new SaunaFan({
+      hap: this.api.hap,
+      service,
+      onCommand: (command) => {
+        const what = command.type === "speed" ? `speed ${command.level * 10}%` : command.type;
+        this.log.info(`${name} set to ${what}.`);
+        this.runAction(async () => {
+          try {
+            if (command.type === "off") await this.fanOff(name);
+            else if (command.type === "speed") await this.fanSpeedAction(command.level);
+            else await this.fanOnAction();
+          } catch (e) {
+            this.fanV2.failed();
+            throw e;
+          }
+        });
+      },
+    });
+    return accessory;
+  }
+
   // Probe temperature in °C; Home converts for display. Polling is the only source of truth.
   setUpTemperatureSensor(name) {
     const { Service, Characteristic, HapStatusError, HAPStatus } = this.api.hap;
@@ -344,7 +378,10 @@ export class ACInfinitySaunaPlatform {
       throw new Error(`Setting the fan port to Auto failed: ${e.message}`);
     }
     this.log.info(`Fan port set to Auto: runs at speed ${fanSpeed} until ${temperatureF}°F.`);
+    this.offSentAt = 0;
+    this.noteFanCommand({ type: "auto" });
     this.startCooldownPoll();
+    await this.refreshFanState();
   }
 
   async fanOff(reason) {
@@ -352,19 +389,58 @@ export class ACInfinitySaunaPlatform {
     await this.setPort({ atType: AT_TYPE.OFF });
     // The controller keeps reporting the old mode until the fan spins down, so don't verify by reading back.
     this.log.info(`Fan port set to Off (${reason}).`);
-    this.setFanState(false, { hold: true });
+    this.offSentAt = Date.now();
+    this.noteFanCommand({ type: "off" });
+    await this.refreshFanState();
   }
 
-  // On mode at the speed set on the controller; the cooldown speed if that is 0.
+  // On mode at the speed set on the controller, or 10 if that is 0.
   async fanOnAction() {
     this.cancelCooldownPoll();
-    const { devId, port } = this.target;
-    const current = await this.aci.getPortSettings(devId, port);
-    const overrides = { atType: AT_TYPE.ON };
-    if (!Number(current?.onSpead)) overrides.onSpead = this.cfg.cooldown.fanSpeed;
-    await this.setPort(overrides);
-    this.log.info(`Fan port set to On at speed ${overrides.onSpead ?? current.onSpead}.`);
-    this.setFanState(true, { hold: true });
+    let level;
+    await this.setPort((existing) => {
+      level = Number(existing.onSpead) || 10;
+      return { atType: AT_TYPE.ON, onSpead: level };
+    });
+    this.log.info(`Fan port set to On at speed ${level}.`);
+    this.offSentAt = 0;
+    this.noteFanCommand({ type: "on", level });
+    await this.refreshFanState();
+  }
+
+  // In Auto (a cooldown), change only the speed so the auto-stop still applies. Otherwise On at this level.
+  async fanSpeedAction(level) {
+    // Right after an Off, the controller still reports its old mode; don't mistake that for Auto.
+    const offLagging = Date.now() - this.offSentAt < OFF_READBACK_LAG_MS;
+    let auto = false;
+    await this.setPort((existing) => {
+      auto = Number(existing.atType) === AT_TYPE.AUTO && !offLagging;
+      return auto ? { onSpead: level } : { atType: AT_TYPE.ON, onSpead: level };
+    });
+    if (auto) {
+      this.log.info(`Cooldown fan speed set to ${level}; the port stays in Auto.`);
+    } else {
+      this.cancelCooldownPoll();
+      this.log.info(`Fan port set to On at speed ${level}.`);
+    }
+    this.offSentAt = 0;
+    this.noteFanCommand({ type: "speed", level });
+    await this.refreshFanState();
+  }
+
+  // Tell whichever fan accessory is in use what was just commanded.
+  noteFanCommand(command) {
+    if (this.fanV2) this.fanV2.commanded(command);
+    else if (command.type === "auto") this.fanHoldUntil = 0;
+    else this.setFanState(command.type !== "off", { hold: true });
+  }
+
+  // Every device-list read (fan check, sensor poll, cooldown check) updates the fan accessory.
+  onPolledPort(portInfo) {
+    const speak = Number(portInfo.speak) || 0;
+    if (speak === 0) this.offSentAt = 0;
+    if (this.fanV2) this.fanV2.onSpeak(speak);
+    else this.setFanState(speak > 0);
   }
 
   // ---------- fan state ----------
@@ -380,7 +456,7 @@ export class ACInfinitySaunaPlatform {
   async refreshFanState() {
     try {
       const { portInfo } = await this.readPort();
-      this.setFanState(Number(portInfo.speak) > 0);
+      this.onPolledPort(portInfo);
       this.fanStreak.succeed();
     } catch (e) {
       this.fanStreak.fail(e.message);
@@ -392,7 +468,8 @@ export class ACInfinitySaunaPlatform {
   async pollTemperature() {
     const { HapStatusError, HAPStatus } = this.api.hap;
     try {
-      const { controller } = await this.readPort();
+      const { controller, portInfo } = await this.readPort({ maxAgeMs: SHARED_READING_MAX_AGE_MS });
+      this.onPolledPort(portInfo);
       const c = readProbeC(controller);
       if (c === null) {
         throw new Error(`no valid probe reading (deviceInfo.temperature = ${JSON.stringify(controller.deviceInfo?.temperature)})`);
@@ -480,16 +557,17 @@ export class ACInfinitySaunaPlatform {
   async cooldownTick() {
     const { temperatureF } = this.cfg.cooldown;
     try {
-      const { controller, portInfo } = await this.readPort({ maxAgeMs: COOLDOWN_CACHE_MAX_AGE_MS });
+      const { controller, portInfo } = await this.readPort({ maxAgeMs: SHARED_READING_MAX_AGE_MS });
       const probeC = readProbeC(controller);
       const probeF = probeC === null ? null : (probeC * 9) / 5 + 32;
       const speed = Number(portInfo.speak);
-      this.setFanState(speed > 0);
+      this.onPolledPort(portInfo);
       const probe = probeF === null ? "no valid reading" : `${probeF.toFixed(1)}°F`;
       this.log.info(`Cooldown check: probe ${probe} (target ${temperatureF}°F), fan speed ${speed}.`);
 
       if (speed === 0 && probeF !== null && probeF <= temperatureF) {
         await this.setPort({ atType: AT_TYPE.OFF });
+        this.noteFanCommand({ type: "off" });
         this.log.info("Sauna has cooled and the fan has stopped. Fan port set to Off; cooldown poll finished.");
         return true;
       }

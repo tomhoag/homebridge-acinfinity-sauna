@@ -152,9 +152,11 @@ export class ACInfinityClient {
 
   // Same approach as HA's update_device_controls: read current settings, apply overrides,
   // send the full key set back as a query string with an empty body.
-  setPortControls(devId, port, overrides) {
+  // `overrides` may be a function of the settings just read, for changes that depend on them.
+  setPortControls(devId, port, overridesOrFn) {
     return this.#enqueue(async () => {
       const existing = await this.#call("/api/dev/getdevModeSettingList", { form: { devId, port } });
+      const overrides = typeof overridesOrFn === "function" ? overridesOrFn(existing ?? {}) : overridesOrFn;
       const payload = {};
       for (const key of DEVICE_CONTROL_KEYS) {
         let v = key in overrides ? overrides[key] : existing?.[key];
