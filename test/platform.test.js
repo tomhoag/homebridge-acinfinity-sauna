@@ -118,9 +118,9 @@ afterEach(() => {
 
 // ---------- tests ----------
 
-test("startup with AC Infinity only: two accessories, controller resolved, no HUUM calls", async () => {
+test("startup with AC Infinity only: three accessories, controller resolved, no HUUM calls", async () => {
   const { api, log, platform } = await startPlatform({ ...baseConfig, huum: undefined });
-  assert.equal(api.registered.length, 2);
+  assert.deepEqual(api.registered.map((a) => a.displayName), ["Sauna Cooldown", "Sauna Fan", "Sauna Temperature"]);
   assert.equal(platform.target.devId, DEV_ID, "devId must survive JSON parsing intact");
   assert.ok(log.lines.some((l) => l.includes(`devId ${DEV_ID}`) && l.includes("port 1")));
   assert.ok(!server.calls.some((c) => c.path.startsWith("/action/home")));
@@ -275,7 +275,7 @@ test("old momentary End Sauna and Sauna Fan Off accessories are removed", async 
   platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:fan-off", displayName: "Sauna Fan Off" });
   await platform.start();
   assert.deepEqual(api.unregistered.map((a) => a.displayName), ["End Sauna", "Sauna Fan Off"]);
-  assert.equal(api.registered.length, 2);
+  assert.equal(api.registered.length, 3);
 });
 
 test("bad config: clear error, nothing exposed", async () => {
@@ -294,27 +294,18 @@ test("scheduled Off is set for the next occurrence", async () => {
 
 // ---------- temperature sensor ----------
 
-const sensorConfig = { ...baseConfig, temperatureSensor: { enabled: true } };
+const sensorConfig = baseConfig;
 const sensorChar = (api, c) => api.registered.find((a) => a.UUID === "uuid:ACInfinitySauna:temperature").getService("temperature").getCharacteristic(c);
 const listCalls = () => server.calls.filter((c) => c.path === "/api/user/devInfoListAll").length;
 
-test("sensor disabled: no sensor accessory and no sensor polling", async () => {
-  const { api, platform, log } = await startPlatform({ ...baseConfig, debug: true });
-  assert.ok(!api.registered.some((a) => a.UUID === "uuid:ACInfinitySauna:temperature"));
-  assert.equal(platform.sensorTimer, null);
-  assert.ok(!log.lines.some((l) => l.includes("Temperature")));
+test("the sensor polls on its own interval without extra API calls", async () => {
+  const { platform } = await startPlatform({ ...baseConfig, temperatureSensor: { pollIntervalSeconds: 30, name: "Hot Room" } });
+  assert.equal(platform.cfg.temperatureSensor.intervalMs, 30 * 1000);
+  assert.ok(platform.sensorTimer);
+  assert.equal(listCalls(), 2, "startup: controller lookup + fan check; the sensor reused the fan check's reading");
 });
 
-test("sensor disabled later: the old sensor accessory is removed", async () => {
-  const api = makeApi();
-  started.push(api);
-  const platform = new ACInfinitySaunaPlatform(makeLog(), baseConfig, api);
-  platform.configureAccessory({ UUID: "uuid:ACInfinitySauna:temperature", displayName: "Sauna Temperature" });
-  await platform.start();
-  assert.deepEqual(api.unregistered.map((a) => a.displayName), ["Sauna Temperature"]);
-});
-
-test("sensor enabled: widened range, probe value in °C at startup", async () => {
+test("sensor: widened range, probe value in °C at startup", async () => {
   server.temp = 6199;
   const { api } = await startPlatform(sensorConfig);
   const t = sensorChar(api, "CurrentTemperature");
@@ -415,7 +406,7 @@ test("cooldown waits when the probe has no believable reading", async () => {
 });
 
 test("bad sensor poll interval is a config error", async () => {
-  const { api, log } = await startPlatform({ ...baseConfig, temperatureSensor: { enabled: true, pollIntervalSeconds: 10 } });
+  const { api, log } = await startPlatform({ ...baseConfig, temperatureSensor: { pollIntervalSeconds: 10 } });
   assert.equal(api.registered.length, 0);
   assert.ok(log.lines.some((l) => l.includes("pollIntervalSeconds")));
 });
@@ -441,7 +432,7 @@ const fanV2 = (api) => {
 };
 const writes = () => server.calls.filter((c) => c.path === "/api/dev/addDevMode");
 
-// Start with the fan enabled and short debounce/hold times so tests run quickly.
+// Start with a short debounce so tests run quickly.
 async function startFan(config = baseConfig) {
   const started_ = await startPlatform(config);
   started_.platform.fanV2.debounceMs = 20;
@@ -494,7 +485,7 @@ test("Fanv2 shows the real fan level from the poll", async () => {
 
 test("Fanv2: the sensor poll updates the fan too", async () => {
   server.speak = 0;
-  const { platform, fan } = await startFan({ ...baseConfig, temperatureSensor: { enabled: true } });
+  const { platform, fan } = await startFan();
   server.speak = 4; platform.aci.devices = null;
   await platform.pollTemperature();
   assert.equal(fan.speed.value, 40);

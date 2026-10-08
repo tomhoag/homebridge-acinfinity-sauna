@@ -22,9 +22,9 @@ It also adds a **Sauna Fan**: a HomeKit fan with on/off and a speed slider. Home
 
 If you leave the fan On, it will run during the next heat-up. **Daily Off time** (below) is a good backstop.
 
-### Temperature sensor (optional)
+### Temperature sensor
 
-Turn on **Temperature sensor** to add a **Sauna Temperature** sensor showing the AC Infinity probe reading. Use it in automations such as "when Sauna Temperature drops below 90 °F".
+The plugin also adds a **Sauna Temperature** sensor showing the AC Infinity probe reading. Use it in automations such as "when Sauna Temperature drops below 90 °F".
 
 - The plugin updates the reading every 2 minutes by default (30 s to 10 min). The AC Infinity cloud can't push updates, so the plugin polls it. To save API calls, the sensor reuses the fan's once-a-minute reading when that is under a minute old, so a reading can be up to about a minute old.
 - Readings up to 150 °C (302 °F) are shown. HomeKit's usual limit for temperature sensors is 100 °C.
@@ -79,7 +79,6 @@ Configure it in the Homebridge UI, or add this to `config.json`:
 | `cooldown.checkIntervalMinutes` | 10 | How often to check whether the cooldown has finished. |
 | `scheduledOffTime` | (off) | `HH:MM` in local time. Sets the port Off every day at this time. |
 | `huum.email`, `huum.password` | (off) | If either is missing, the plugin doesn't use HUUM at all. |
-| `temperatureSensor.enabled` | false | Adds the temperature sensor. |
 | `temperatureSensor.name` | `Sauna Temperature` | Sensor name. |
 | `temperatureSensor.pollIntervalSeconds` | 120 | How often to read the probe, 30–600. |
 | `cooldownName` | `Sauna Cooldown` | Cooldown switch name. |

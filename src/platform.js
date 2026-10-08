@@ -44,14 +44,11 @@ function readConfig(config) {
   }
 
   const sensor = config.temperatureSensor ?? {};
-  let temperatureSensor = null;
-  if (sensor.enabled) {
-    const pollIntervalSeconds = Number(sensor.pollIntervalSeconds ?? 120);
-    if (!Number.isFinite(pollIntervalSeconds) || pollIntervalSeconds < 30 || pollIntervalSeconds > 600) {
-      throw new ConfigError("temperatureSensor.pollIntervalSeconds must be between 30 and 600.");
-    }
-    temperatureSensor = { name: sensor.name || "Sauna Temperature", intervalMs: pollIntervalSeconds * 1000 };
+  const pollIntervalSeconds = Number(sensor.pollIntervalSeconds ?? 120);
+  if (!Number.isFinite(pollIntervalSeconds) || pollIntervalSeconds < 30 || pollIntervalSeconds > 600) {
+    throw new ConfigError("temperatureSensor.pollIntervalSeconds must be between 30 and 600.");
   }
+  const temperatureSensor = { name: sensor.name || "Sauna Temperature", intervalMs: pollIntervalSeconds * 1000 };
 
   const fan = config.fan ?? {};
 
@@ -151,8 +148,8 @@ export class ACInfinitySaunaPlatform {
     const active = [
       this.setUpCooldownSwitch(cfg.cooldownName),
       this.setUpFanV2(cfg.fanName),
+      this.setUpTemperatureSensor(cfg.temperatureSensor.name),
     ];
-    if (cfg.temperatureSensor) active.push(this.setUpTemperatureSensor(cfg.temperatureSensor.name));
     // e.g. the momentary End Sauna and Sauna Fan Off switches from v0.1, or the Sauna Fan switch from v0.2-0.5
     this.removeStaleAccessories(active);
     this.scheduleDailyOff();
@@ -160,12 +157,10 @@ export class ACInfinitySaunaPlatform {
     await this.refreshFanState();
     this.fanRefreshTimer = setInterval(() => this.refreshFanState(), FAN_REFRESH_MS);
 
-    if (cfg.temperatureSensor) {
-      const { intervalMs } = cfg.temperatureSensor;
-      this.log.info(`Temperature sensor enabled; polling every ${intervalMs / 1000}s.`);
-      await this.pollTemperature();
-      this.sensorTimer = setInterval(() => this.pollTemperature(), intervalMs);
-    }
+    const { intervalMs } = cfg.temperatureSensor;
+    this.log.info(`Temperature sensor polling every ${intervalMs / 1000}s.`);
+    await this.pollTemperature();
+    this.sensorTimer = setInterval(() => this.pollTemperature(), intervalMs);
   }
 
   async resolveTarget() {

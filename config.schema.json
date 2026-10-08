@@ -2,7 +2,7 @@
   "pluginAlias": "ACInfinitySauna",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, and a **Sauna Fan** with on/off and speed control that shows the fan's real speed. Supports the UIS Controller 69 Pro and 69 Pro+.",
+  "headerDisplay": "Adds a **Sauna Cooldown** switch, which stops the HUUM heater and runs the AC Infinity fan in Auto until the sauna cools before setting it Off, a **Sauna Fan** with on/off and speed control that shows the fan's real speed, and a **Sauna Temperature** sensor for the probe. Supports the UIS Controller 69 Pro and 69 Pro+.",
   "schema": {
     "type": "object",
     "properties": {
@@ -80,11 +80,6 @@
         "title": "Temperature sensor",
         "type": "object",
         "properties": {
-          "enabled": {
-            "title": "Show the probe temperature in HomeKit",
-            "type": "boolean",
-            "default": false
-          },
           "name": {
             "title": "Sensor name",
             "type": "string",
@@ -149,13 +144,9 @@
     },
     {
       "type": "fieldset",
-      "title": "Temperature sensor (optional)",
+      "title": "Temperature sensor",
       "expandable": true,
-      "items": [
-        "temperatureSensor.enabled",
-        { "key": "temperatureSensor.name", "condition": { "functionBody": "return model.temperatureSensor && model.temperatureSensor.enabled;" } },
-        { "key": "temperatureSensor.pollIntervalSeconds", "condition": { "functionBody": "return model.temperatureSensor && model.temperatureSensor.enabled;" } }
-      ]
+      "items": ["temperatureSensor.name", "temperatureSensor.pollIntervalSeconds"]
     },
     {
       "type": "fieldset",
